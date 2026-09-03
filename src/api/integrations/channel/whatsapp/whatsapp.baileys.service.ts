@@ -712,7 +712,64 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  /**
+   * Closes and silences the socket this instance is currently holding.
+   *
+   * WhatsApp allows a single connection per linked device: if a second socket
+   * pairs with the same credentials, each one evicts the other with a
+   * `conflict: replaced` stream error (status code 440), reconnects three
+   * seconds later and evicts it back, forever. It happened in production on
+   * 2026-09-03: an instance reconnected 17 times a minute for 33 minutes.
+   *
+   * The listeners are removed BEFORE closing on purpose. Closing emits
+   * `connection.update` with a close status, and the handler reconnects for
+   * every status code outside `codesToNotReconnect` -- so closing a live socket
+   * without silencing it first would spawn yet another one, causing the very
+   * bug this guards against. That reconnect is scheduled with a `setTimeout`
+   * whose handle is never stored, so it cannot be cancelled afterwards.
+   *
+   * `this.client` is deliberately left pointing at the retired socket until the
+   * new one replaces it: the class reads `this.client.x` directly in 136 places
+   * and only 5 of them are optional-chained, and there are two `await`s ahead --
+   * one of them a network call -- so nulling it here would open a window of
+   * hundreds of milliseconds where any of those throws a TypeError. The
+   * `__pdRetired` marker is what keeps a re-entrant call from closing it twice.
+   */
+  private retireCurrentClient(): void {
+    const previous = this.client as (WASocket & { __pdRetired?: boolean }) | null;
+    if (!previous || previous.__pdRetired) return;
+    previous.__pdRetired = true;
+
+    this.logger.info('Retiring the previous socket before creating a new one (avoids the conflict/replaced loop)');
+
+    try {
+      // Baileys types `removeAllListeners` as requiring an event name, but the
+      // event buffer forwards straight to a Node EventEmitter
+      // (`removeAllListeners: (...args) => ev.removeAllListeners(...args)`),
+      // and calling that with no arguments drops the listeners of every event,
+      // which is what silencing this socket needs. Hence the narrow cast.
+      const emitter = previous.ev as unknown as { removeAllListeners?: () => void } | undefined;
+      emitter?.removeAllListeners?.();
+    } catch (error) {
+      this.logger.warn(`Could not detach listeners from the previous socket: ${error}`);
+    }
+    try {
+      previous.ws?.close?.();
+    } catch (error) {
+      this.logger.warn(`Could not close the previous socket: ${error}`);
+    }
+    try {
+      previous.end?.(new Error('Replaced by a new client'));
+    } catch (error) {
+      this.logger.warn(`Could not end the previous socket: ${error}`);
+    }
+  }
+
   private async createClient(number?: string): Promise<WASocket> {
+    // Both reconnection paths -- the 515/440 timer and reloadConnection() --
+    // funnel through here, which is why the guard lives in this method.
+    this.retireCurrentClient();
+
     this.instance.authState = await this.defineAuthState();
 
     if (number) {
