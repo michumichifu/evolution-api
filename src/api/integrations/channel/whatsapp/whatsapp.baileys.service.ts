@@ -740,7 +740,7 @@ export class BaileysStartupService extends ChannelStartupService {
     if (!previous || previous.__pdRetired) return;
     previous.__pdRetired = true;
 
-    this.logger.info('Retiring the previous socket before creating a new one (avoids the conflict/replaced loop)');
+    this.logger.info('Retiring the previous socket before creating a new one (prevents the 440 replaced-socket loop)');
 
     try {
       // Baileys types `removeAllListeners` as requiring an event name, but the
