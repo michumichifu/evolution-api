@@ -327,6 +327,33 @@ export class ChatwootService {
         if ((jid && jid.includes('@')) || !jid) {
           data['phone_number'] = `+${phoneNumber}`;
         }
+
+        // 🔴 PARCHE PD (5 sep 2026): QUIEN OCULTA SU NÚMERO EN WHATSAPP LLEGA
+        // SIN TELÉFONO, Y EL QUE SE GUARDA NO SIRVE PARA NADA.
+        //
+        // WhatsApp dejó que la gente esconda su número y use un nombre de
+        // usuario. Cuando escriben, no viene el teléfono: viene un
+        // identificador largo acabado en `@lid`. Como aquí hay que rellenar
+        // `phone_number` sí o sí, acaba guardándose ese identificador con un
+        // `+` delante: `+105828497510423`. Parece un teléfono, no lo es, y un
+        // `wa.me/105828497510423` no abre ninguna conversación — cuelga el
+        // WhatsApp Web.
+        //
+        // Lo vio Luis: *«puede ser que esas numeraciones largas que sí que nos
+        // parecen teléfonos sean usuarios que tienen oculto su número y tienen,
+        // más bien, nombre de usuario»*. Era exactamente eso.
+        //
+        // No se toca el teléfono —cambiarlo rompería la búsqueda por
+        // `phone_number` de la que depende medio flujo— pero se guarda al lado
+        // **el usuario, que es por donde SÍ se le puede escribir**, y el `@lid`
+        // para que quien mire la ficha entienda por qué ese número es raro.
+        // Chatwoot los enseña en la ficha del contacto y en la conversación.
+        if (jid && jid.includes('@lid')) {
+          data['custom_attributes'] = {
+            whatsapp_usuario: name || null,
+            whatsapp_lid: jid,
+          };
+        }
       } else {
         data = {
           inbox_id: inboxId,
@@ -830,13 +857,29 @@ export class ChatwootService {
             const chatwootProfilePictureFile = contact?.thumbnail?.split('#')[0].split('?')[0].split('/').pop() || '';
             const pictureNeedsUpdate = waProfilePictureFile !== chatwootProfilePictureFile;
             const nameNeedsUpdate = !contact.name || contact.name === chatId;
+            // 🔴 PARCHE PD (5 sep 2026): el usuario de WhatsApp también se pone
+            // al día en un contacto que YA existe. Los `@lid` viejos se crearon
+            // sin este dato, así que sin esto se quedarían para siempre con su
+            // teléfono inservible y sin forma de saber a quién pertenecen: solo
+            // lo tendrían los que entren de cero a partir de ahora. Ver el
+            // porqué completo en `createContact`.
+            const esLid = typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid');
+            const usuarioNeedsUpdate =
+              esLid && !!nameContact && contact.custom_attributes?.whatsapp_usuario !== nameContact;
             this.logger.verbose(`Picture needs update: ${pictureNeedsUpdate}`);
             this.logger.verbose(`Name needs update: ${nameNeedsUpdate}`);
-            if (pictureNeedsUpdate || nameNeedsUpdate) {
+            if (pictureNeedsUpdate || nameNeedsUpdate || usuarioNeedsUpdate) {
               contact = await this.updateContact(instance, contact.id, {
                 ...(nameNeedsUpdate && { name: nameContact }),
                 ...(waProfilePictureFile === '' && { avatar: null }),
                 ...(pictureNeedsUpdate && { avatar_url: picture_url?.profilePictureUrl }),
+                ...(usuarioNeedsUpdate && {
+                  custom_attributes: {
+                    ...(contact.custom_attributes || {}),
+                    whatsapp_usuario: nameContact,
+                    whatsapp_lid: body.key.remoteJid,
+                  },
+                }),
               });
             }
           }
