@@ -995,6 +995,33 @@ export class ChatwootService {
       messageData.content_attributes = filteredReplyToIds;
     }
 
+    // 🔴 UN MENSAJE QUE SALIÓ FUERA DE CHATWOOT SE MARCA COMO TAL.
+    //
+    // Todo `outgoing` que llega hasta aquí viene del socket de WhatsApp
+    // (`messageType = body.key.fromMe ? 'outgoing' : 'incoming'`), o sea que lo
+    // escribió alguien desde el teléfono, desde WhatsApp Web o desde el chat de
+    // la propia Evolution. Lo que se escribe DENTRO de Chatwoot no pasa por
+    // aquí: Chatwoot ya lo tiene.
+    //
+    // Sin esta marca, Chatwoot no sabe que vino de fuera y hace lo único que
+    // puede: atribuirlo al dueño del token con el que Evolution le habla. En la
+    // agencia eso ponía 2.705 mensajes en 7 días a nombre de una persona que no
+    // atiende a nadie, y el chat decía «Enviado por: Fulano» sin que Fulano
+    // hubiera escrito nada.
+    //
+    // `external_echo` es un campo que Chatwoot YA usa para esto en sus propios
+    // canales (Facebook, Instagram, TikTok y la API oficial de WhatsApp: ver
+    // `app/services/whatsapp/incoming_message_base_service.rb`). Al verlo, la
+    // pantalla pinta el icono de la bandeja en vez del avatar del usuario y
+    // avisa de que el mensaje salió por fuera. Lo único que faltaba era que
+    // alguien se lo dijera.
+    if (messageType === 'outgoing') {
+      messageData.content_attributes = {
+        ...(messageData.content_attributes || {}),
+        external_echo: true,
+      };
+    }
+
     // Adiciona source_reply_id apenas se existir
     if (sourceReplyId) {
       messageData.source_reply_id = sourceReplyId.toString();
