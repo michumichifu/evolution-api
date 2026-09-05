@@ -442,11 +442,25 @@ export class ChatwootService {
     }
 
     // Direct search by query (q) - most common way to search by identifier/email/phone
-    const contact = (await (client as any).get('contacts/search', {
-      params: {
-        q: identifier,
-        sort: 'name',
-      },
+    //
+    // 🔴 PARCHE PD (5 sep 2026): esto llamaba a `(client as any).get(...)`, y el
+    // cliente del SDK NO TIENE un método `get` genérico — el `as any` era lo
+    // único que dejaba compilarlo. En ejecución reventaba SIEMPRE con
+    // `TypeError: t.get is not a function`, que el `catch` de `resolveLidToPhone`
+    // se tragaba como un simple `warn`. Resultado: ningún `@lid` se resolvía
+    // nunca, y los mensajes entrantes de WhatsApp con identificador nuevo no
+    // encontraban a su contacto.
+    //
+    // Medido en la VPS2 el 5 sep 2026: **184 fallos de resolución en 12 horas**
+    // y 172 contactos duplicados creados con nombre numérico (`105828497510423`)
+    // repartidos entre las cuatro clínicas — 150 solo en Dentística.
+    //
+    // El propio archivo ya usa la forma buena 60 líneas más abajo
+    // (`client.contacts.search({ accountId, q })`), que es la del SDK.
+    const contact = (await client.contacts.search({
+      accountId: this.provider.accountId,
+      q: identifier,
+      sort: 'name',
     })) as any;
 
     if (contact && contact.data && contact.data.payload && contact.data.payload.length > 0) {
@@ -459,7 +473,13 @@ export class ChatwootService {
     }
 
     // Try search by attribute
-    const contactByAttr = (await (client as any).post('contacts/filter', {
+    //
+    // 🔴 PARCHE PD (5 sep 2026): mismo fallo que arriba, con `post` en vez de
+    // `get`. Este camino casi nunca se llegaba a pisar —el de arriba reventaba
+    // antes— pero estaba igual de roto, y arreglar solo uno habría dejado la
+    // segunda mitad de la función esperando su turno para fallar.
+    const contactByAttr = (await client.contacts.filter({
+      accountId: this.provider.accountId,
       payload: [
         {
           attribute_key: 'identifier',
