@@ -262,6 +262,23 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly userDevicesCache: CacheStore = new NodeCache({ stdTTL: 300000, useClones: false });
   private endSession = false;
   private isDeleting = false; // Flag to prevent reconnection during deletion
+
+  /**
+   * PD 2026-09-06: how many times we have retried after a 408 (network timeout).
+   *
+   * A 40-second network outage on the host closed the sockets of five instances with a
+   * 408. Because 408 sits in `codesToNotReconnect`, the handler took the "give up" path,
+   * which ends in `cleaningUp()` — and that DELETES the credentials (instance folder plus
+   * the `Session` row). Forty seconds without network cost one QR scan per client, each
+   * one needing the customer's phone in hand.
+   *
+   * A 408 is a lost connection, not a closed session: WhatsApp still has the device
+   * paired. So retry a bounded number of times and, if it still does not come back, close
+   * the instance WITHOUT destroying anything. Bounded on purpose: upstream put 408 on that
+   * list (72ca397c) to stop reconnect loops, and that reason has not gone away.
+   */
+  private timeoutRetries = 0;
+  private static readonly MAX_TIMEOUT_RETRIES = 5;
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
 
@@ -533,6 +550,22 @@ export class BaileysStartupService extends ChannelStartupService {
         return;
       }
 
+      // PD 2026-09-06: a 408 is a lost connection, never a closed session. Retry a bounded
+      // number of times with a growing wait instead of going straight to the path that
+      // wipes the credentials. See `timeoutRetries` for the incident that forced this.
+      const isNetworkTimeout = statusCode === DisconnectReason.timedOut; // 408
+      if (isNetworkTimeout && this.timeoutRetries < BaileysStartupService.MAX_TIMEOUT_RETRIES) {
+        this.timeoutRetries += 1;
+        const wait = 3000 * 2 ** (this.timeoutRetries - 1); // 3s, 6s, 12s, 24s, 48s
+        this.logger.info(
+          `Network timeout (408): retry ${this.timeoutRetries}/${BaileysStartupService.MAX_TIMEOUT_RETRIES} in ${wait / 1000}s, credentials untouched`,
+        );
+        setTimeout(async () => {
+          await this.connectToWhatsapp(this.phoneNumber);
+        }, wait);
+        return;
+      }
+
       const shouldReconnect = !codesToNotReconnect.includes(statusCode);
 
       this.logger.info({
@@ -576,7 +609,18 @@ export class BaileysStartupService extends ChannelStartupService {
           );
         }
 
-        this.eventEmitter.emit('logout.instance', this.instance.name, 'inner');
+        // PD 2026-09-06: 'logout.instance' ends in cleaningUp(), which deletes the
+        // instance folder and its `Session` row. That is right for a 401 — the session is
+        // gone anyway — and wrong for a 408, where WhatsApp still has the device paired
+        // and the credentials would work on the next attempt. Closing is fine; erasing is
+        // the only irreversible thing this handler can do, so a timeout never gets to.
+        if (isNetworkTimeout) {
+          this.logger.warn(
+            `Network timeout (408) after ${this.timeoutRetries} retries: closing "${this.instance.name}" but KEEPING its credentials`,
+          );
+        } else {
+          this.eventEmitter.emit('logout.instance', this.instance.name, 'inner');
+        }
         this.client?.ws?.close();
         this.client.end(new Error('Close connection'));
 
@@ -589,6 +633,10 @@ export class BaileysStartupService extends ChannelStartupService {
         this.logger.warn('connectionUpdate: connection open but client.user is undefined, skipping');
         return;
       }
+      // PD 2026-09-06: back online, so the timeout budget starts over. Without this, five
+      // separate outages spread over months would exhaust the retries and the sixth one
+      // would give up on the first try.
+      this.timeoutRetries = 0;
       this.instance.wuid = this.client.user.id.replace(/:\d+/, '');
       try {
         const profilePic = await this.profilePicture(this.instance.wuid);
