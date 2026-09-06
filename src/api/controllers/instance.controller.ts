@@ -430,6 +430,14 @@ export class InstanceController {
 
     const restorable = [];
     for (const instance of closed) {
+      // PD 2026-09-06: the database saying 'close' does NOT prove the instance is down.
+      // The two can drift — the row is written when the socket closes, and a socket that
+      // never closed leaves the row stale. Offering to "restore" a WhatsApp that is
+      // sending and receiving right now is worse than useless: reconnecting it tears down
+      // a live session. The live state is the one in memory, so it wins.
+      const live = this.waMonitor.waInstances[instance.name]?.connectionStatus?.state;
+      if (live === 'open' || live === 'connecting') continue;
+
       const stored = await this.prismaRepository.session.count({ where: { sessionId: instance.id } });
       if (stored > 0) continue; // still has its credentials: nothing to restore
 
