@@ -248,6 +248,47 @@ Que un timeout **no destruya** lo que no hace falta destruir:
 
 ---
 
+## 🔴 LAS URLs DE FOTO DE WHATSAPP CADUCAN, Y LA CADUCIDAD VA DENTRO DE LA URL (6 sep 2026)
+
+**El síntoma:** el logo de una instancia deja de verse en el Manager, con un recuadro gris en su
+sitio. *«Si recientemente sí se veía»*, y encima **solo le pasa a la Cloud API**: la Baileys del
+mismo número enseña su logo tan tranquila.
+
+**La causa, medida en el navegador:** la misma imagen se pedía por **tres direcciones distintas**, y
+una devolvía **403**:
+
+| URL | Caducidad | Resultado |
+|---|---|---|
+| `…&oe=6A9DC00C` | **ese mismo día a las 15:33 RD** | ❌ **403** ← la que usaba la tarjeta |
+| `…&oe=6AAAEF0C` | 10 días después | ✅ 200 (la que Evolution tiene guardada) |
+| `…&oe=6AA1B48C` | 3 días después | ✅ 200 (la que Meta devuelve ahora) |
+
+🔴 **El parámetro `oe=` de esas URLs es su fecha de caducidad, en hexadecimal.** Se lee así:
+
+```bash
+printf '%d\n' 0x6A9DC00C | xargs -I{} date -d @{}
+```
+
+**Por qué solo la Cloud API:** es la única que **pregunta a Meta** por el perfil desde el navegador.
+Las Baileys usan la foto que Evolution guardó al conectar. Y el navegador servía **de su caché** la
+respuesta vieja de Meta, con una dirección ya muerta — por eso «hace un rato se veía»: dejó de verse
+**a la hora exacta** en que caducó.
+
+**Arreglado** en `evolution-manager-v2` (`bc6855b`): `cache: "no-store"` en las consultas a Meta —
+cachear una respuesta cuyas URLs caducan es guardar una dirección que se va a morir sola — y, si una
+foto falla, **se prueba la siguiente candidata** en vez de esconder la imagen. Antes el `onError`
+ponía `display:none` y dejaba el hueco gris **teniendo al lado una foto buena**.
+
+🔴 **La regla que sale de aquí:** cuando una URL trae su propia caducidad, **no se guarda en ninguna
+caché** ni se trata como un dato estable; y **un `onError` que esconde algo es una decisión, no una
+red de seguridad**: esconde el fallo y también la alternativa.
+
+⚠️ **Y una cosa más, anotada aunque no se tocó:** para preguntarle el perfil a Meta, **el Manager
+manda el token de la instancia desde el navegador del usuario**. Funciona, pero esa consulta la
+haría mejor el servidor.
+
+---
+
 ## Dónde está el resto de la documentación
 
 En la carpeta de la agencia, `Documentacion/`:
