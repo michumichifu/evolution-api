@@ -9,13 +9,23 @@ import { SettingsService } from '@api/services/settings.service';
 import { Events, Integration, wa } from '@api/types/wa.types';
 import { Auth, Chatwoot, ConfigService, HttpServer, WaBusiness } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { INSTANCE_DIR } from '@config/path.config';
 import { BadRequestException, InternalServerErrorException, UnauthorizedException } from '@exceptions';
 import { delay } from 'baileys';
 import { isArray, isURL } from 'class-validator';
 import EventEmitter2 from 'eventemitter2';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
 import { v4 } from 'uuid';
 
 import { ProxyController } from './proxy.controller';
+
+/**
+ * PD 2026-09-06: where the hourly backup of the credentials lands, inside the instances
+ * volume so the container can read it without touching the compose file. It is not a
+ * uuid, so `cleaningUp()` — which removes INSTANCE_DIR/<id> — never touches it.
+ */
+const RESTORE_DIR = '.respaldos-pd';
 
 export class InstanceController {
   constructor(
@@ -403,6 +413,72 @@ export class InstanceController {
         state: this.waMonitor.waInstances[instanceName]?.connectionStatus?.state,
       },
     };
+  }
+
+  /**
+   * PD 2026-09-06: instances whose credentials were deleted and can be brought back from
+   * the hourly backup, without asking anyone for their phone.
+   *
+   * Only 408 (network timeout) qualifies. With a 401 WhatsApp really did close the
+   * session, so restoring the file would achieve nothing and the honest answer is a QR.
+   */
+  public async listRestorableSessions() {
+    const closed = await this.prismaRepository.instance.findMany({
+      where: { connectionStatus: 'close', disconnectionReasonCode: 408 },
+      select: { id: true, name: true, number: true, disconnectionAt: true },
+    });
+
+    const restorable = [];
+    for (const instance of closed) {
+      const stored = await this.prismaRepository.session.count({ where: { sessionId: instance.id } });
+      if (stored > 0) continue; // still has its credentials: nothing to restore
+
+      const backup = join(INSTANCE_DIR, RESTORE_DIR, `${instance.id}.json`);
+      if (!existsSync(backup)) continue;
+
+      restorable.push({
+        instanceId: instance.id,
+        instanceName: instance.name,
+        number: instance.number,
+        disconnectedAt: instance.disconnectionAt,
+        backupSavedAt: statSync(backup).mtime,
+      });
+    }
+
+    return { restorable, count: restorable.length };
+  }
+
+  /**
+   * PD 2026-09-06: puts the backed up credentials back and reconnects. Same thing the
+   * watchdog does every five minutes; this is the button for when you do not want to wait.
+   */
+  public async restoreSessions({ instanceNames }: { instanceNames?: string[] }) {
+    const { restorable } = await this.listRestorableSessions();
+    const chosen = instanceNames?.length
+      ? restorable.filter((r) => instanceNames.includes(r.instanceName))
+      : restorable;
+
+    const results = [];
+    for (const item of chosen) {
+      const backup = join(INSTANCE_DIR, RESTORE_DIR, `${item.instanceId}.json`);
+      try {
+        const creds = readFileSync(backup, 'utf8');
+        JSON.parse(creds); // a broken file must not reach the database
+
+        await this.prismaRepository.session.create({
+          data: { sessionId: item.instanceId, creds },
+        });
+
+        await this.connectToWhatsapp({ instanceName: item.instanceName });
+        this.logger.info(`Session restored from backup for "${item.instanceName}", no QR needed`);
+        results.push({ instanceName: item.instanceName, restored: true });
+      } catch (error) {
+        this.logger.error(`Could not restore "${item.instanceName}": ${error?.message ?? error}`);
+        results.push({ instanceName: item.instanceName, restored: false, error: error?.message ?? String(error) });
+      }
+    }
+
+    return { results, restored: results.filter((r) => r.restored).length, requested: chosen.length };
   }
 
   public async fetchInstances({ instanceName, instanceId, number }: InstanceDto, key: string) {

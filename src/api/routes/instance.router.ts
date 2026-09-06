@@ -66,6 +66,18 @@ export class InstanceRouter extends RouterBroker {
 
         return res.status(HttpStatus.OK).json(response);
       })
+      // PD 2026-09-06: credenciales borradas por un timeout de red, y el botón para
+      // devolverlas. Ver `listRestorableSessions` en el controlador.
+      .get('/restorableSessions', ...guards, async (req, res) => {
+        const response = await instanceController.listRestorableSessions();
+
+        return res.status(HttpStatus.OK).json(response);
+      })
+      .post('/restoreSessions', ...guards, async (req, res) => {
+        const response = await instanceController.restoreSessions(req.body ?? {});
+
+        return res.status(HttpStatus.OK).json(response);
+      })
       .post(this.routerPath('setPresence'), ...guards, async (req, res) => {
         const response = await this.dataValidate<null>({
           request: req,

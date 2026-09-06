@@ -23,7 +23,15 @@ async function getInstance(instanceName: string) {
 }
 
 export async function instanceExistsGuard(req: Request, _: Response, next: NextFunction) {
-  if (req.originalUrl.includes('/instance/create') || req.originalUrl.includes('/instance/fetchInstances')) {
+  // PD 2026-09-06: `restorableSessions` y `restoreSessions` hablan de TODAS las instancias
+  // a la vez, igual que `fetchInstances`, así que no llevan instanceName en la ruta. Sin
+  // esta línea el guard las corta con un 400 y el controlador no llega a verlas.
+  if (
+    req.originalUrl.includes('/instance/create') ||
+    req.originalUrl.includes('/instance/fetchInstances') ||
+    req.originalUrl.includes('/instance/restorableSessions') ||
+    req.originalUrl.includes('/instance/restoreSessions')
+  ) {
     return next();
   }
 
