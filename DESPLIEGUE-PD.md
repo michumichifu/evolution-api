@@ -151,6 +151,76 @@ como `CustomAttributeDefinition` (`contact_attribute`) en las cinco cuentas.
 /opt/evolution-api/dist-parcheado.bak-20260905-preusuario   antes del de los atributos
 ```
 
+## 🔴 UN TIMEOUT DE RED BORRA LAS CREDENCIALES, Y ESO CUESTA UN QR POR CLIENTE (6 sep 2026)
+
+**El 6 de septiembre de 2026, un corte de red de 40 segundos dejó sin WhatsApp a cinco instancias.**
+No fue WhatsApp, ni los teléfonos, ni ningún cliente: la VPS2 se quedó sin salida durante ~40 s
+—quedó registrado como `i/o timeout` contra **los dos** resolvers DNS de Contabo—, los sockets
+expiraron con **408** y **Evolution borró sus credenciales**. El relato completo, con la línea de
+tiempo y cómo se distingue un corte de red de una avería de DNS, en la carpeta de la agencia:
+`Documentacion/INCIDENCIA - Un corte de red de 40 segundos borró las credenciales de las cinco instancias de WhatsApp (6 sep 2026).md`.
+
+### La cadena, línea por línea
+
+```
+socket sin respuesta
+  → statusCode 408 (DisconnectReason.timedOut / connectionLost, node_modules/baileys)
+  → whatsapp.baileys.service.ts:510   codesToNotReconnect = [loggedOut, forbidden, 402, 406, 408]
+  → :536  shouldReconnect = false     → NO reintenta
+  → :579  eventEmitter.emit('logout.instance', ...)
+  → monitor.service.ts:415            listener de 'logout.instance'
+  → monitor.service.ts:159 cleaningUp()
+        :172  rmSync(INSTANCE_DIR/<id>)                    ← borra la carpeta
+        :175  prismaRepository.session.deleteMany(...)     ← borra la credencial
+  → sin credencial: la instancia solo se levanta con un QR nuevo
+```
+
+⚠️ **La línea del 408 es de UPSTREAM**, no nuestra: commit `72ca397c` (8 abr 2026, *«fix: logout
+instance»*), puesta **para evitar bucles de reconexión** cuando el servidor devuelve un 408 en el
+cierre. El efecto secundario es el que nos costó el día.
+
+🔴 **Los códigos NO significan lo que parece**, y de esto depende qué se puede rescatar:
+
+| Código | Qué es | ¿Se puede recuperar sin QR? |
+|---|---|---|
+| **401** `loggedOut` | cierre de sesión real (desde el teléfono, o WhatsApp la invalidó) | **No.** Aunque se recupere el fichero, la sesión ya no vale |
+| **403** `forbidden` | restricción o baneo del número | No |
+| **408** `timedOut` | pérdida de conexión. **Nadie hizo nada** | **Sí**, y está probado |
+| **515** `restartRequired` | normal justo después de escanear | se resuelve solo |
+
+### Lo que ya está probado: se recupera SIN QR
+
+**Postgres no borra al borrar, marca.** Cuatro de las cinco instancias volvieron a `open` **sin
+escanear un solo código**, sacando la credencial del fichero de la tabla `Session`. El
+procedimiento, los cuatro guiones y las cinco trampas están en la carpeta de la agencia:
+`scripts/sitios/rescate-credenciales-evolution/LEEME.md`.
+
+🔴 **Es una carrera contra `autovacuum`:** lo PRIMERO es congelar los ficheros de la tabla; después
+se investiga. Y se mira en **dos sitios**, porque **el tamaño decide dónde sobrevive la credencial**:
+las de 2-3 KB van comprimidas en su propia fila, y a partir de ~4 KB se guardan aparte, en el TOAST
+—de «Zenithe Clinica Dental» **no quedaba fila ninguna** y se recuperó igual desde el bloque suelto.
+
+### 🔧 El parche que falta (NO está hecho)
+
+Que un timeout **no destruya** lo que no hace falta destruir:
+
+1. **Sacar el 408 de `codesToNotReconnect`** y darle **reintentos con límite** (por ejemplo 5, con
+   espera creciente). 🔴 **Con límite, no infinito**: upstream lo metió ahí por los bucles de
+   reconexión, y quitarlo sin freno reabre ese problema.
+2. **Que `logout.instance` no llame a `cleaningUp()` cuando el cierre es un 408.** Borrar la
+   credencial solo tiene sentido en un **401** —donde ya no sirve—, nunca en un corte de red.
+   Si se toca una sola cosa de las dos, que sea esta: es la que convierte 40 segundos sin red en
+   una vuelta por los teléfonos de los clientes.
+3. **Respaldo horario de la tabla `Session`** fuera de la base, para no depender de que las tuplas
+   sobrevivan. Es la red de seguridad que hace innecesario el rescate forense.
+
+Y en el watchdog (`scripts/sitios/evo-watch.sh`, en la carpeta de la agencia), dos cosas más: que
+**no escriba `OK` con instancias caídas** —el 6 sep dijo `OK` cinco horas seguidas con 5 de 6
+muertas— y que, viendo una caída por 408 sin sesión en la base, **restaure desde el respaldo y
+reconecte sola**.
+
+---
+
 ## Dónde está el resto de la documentación
 
 En la carpeta de la agencia, `Documentacion/`:
