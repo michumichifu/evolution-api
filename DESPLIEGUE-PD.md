@@ -200,24 +200,51 @@ se investiga. Y se mira en **dos sitios**, porque **el tamaño decide dónde sob
 las de 2-3 KB van comprimidas en su propia fila, y a partir de ~4 KB se guardan aparte, en el TOAST
 —de «Zenithe Clinica Dental» **no quedaba fila ninguna** y se recuperó igual desde el bloque suelto.
 
-### 🔧 El parche que falta (NO está hecho)
+### 🟢 Lo que se hizo el mismo día (todo desplegado y verificado)
+
+| # | Qué | Dónde | Commit |
+|---|---|---|---|
+| 1 | **Respaldo horario** de las credenciales, un fichero por instancia | `scripts/sitios/respaldo-sesiones-evolution.sh` (agencia) → `/usr/local/bin/`, cron `20 * * * *` | — |
+| 2 | **El 408 ya no borra**: 5 reintentos (3-6-12-24-48 s) y, si no vuelve, cierra **conservando** la credencial | este repo | `a21a4731` |
+| 3 | **El watchdog repara solo** y deja de decir `OK` con instancias caídas | `scripts/sitios/evo-watch.sh` v4 (agencia) | — |
+| 4 | **Endpoint + botón** para devolverlas a mano, sin esperar al watchdog | este repo y `evolution-manager-v2` | `a039a65c` y `0b52e96` |
+
+**Las dos rutas nuevas** (globales, como `fetchInstances`):
+
+```
+GET  /instance/restorableSessions   ->  {"restorable":[…],"count":n}
+POST /instance/restoreSessions      ->  body {"instanceNames":["Mundo Veneco"]} (vacío = todas)
+```
+
+🔴 **Tres cosas que hay que saber si se tocan:**
+
+1. **El contenedor NO ve `/root/backups/`.** Lee la copia de
+   `INSTANCE_DIR/.respaldos-pd`, que vive dentro del volumen de instancias — lo único
+   alcanzable **sin tocar el compose**. La llena el respaldo horario, que hace espejo.
+   El nombre **no es un uuid a propósito**: `cleaningUp()` borra `INSTANCE_DIR/<id>`, así que
+   una carpeta que no parece un id nunca entra en esa criba.
+2. **`instanceExistsGuard` corta con un 400 todo lo que no lleve `instanceName` en la ruta**, y
+   estas dos hablan de todas las instancias a la vez. Sin añadirlas a su lista blanca, el
+   controlador **no llega a ejecutarse** y la respuesta es
+   `{"status":400,…"instanceName" not provided}` — que parece un fallo del cliente y es del guard.
+3. **Solo se ofrece el 408.** Con un 401 la sesión está cerrada de verdad: restaurar el fichero
+   no serviría, y ofrecerlo sería prometer algo que no se puede cumplir.
+
+**El botón** está en el dashboard del Manager, **solo se pinta si hay algo que restaurar**, enseña
+**cuáles son, cuándo cayeron y de cuándo es su respaldo**, y deja elegir. Global pero no a ciegas:
+las caídas llegan de las dos formas —ese día cayeron tres de golpe, pero las dos de Zenithe habían
+caído cada una por su lado.
+
+### 🔧 Lo que sigue sin hacer
 
 Que un timeout **no destruya** lo que no hace falta destruir:
 
-1. **Sacar el 408 de `codesToNotReconnect`** y darle **reintentos con límite** (por ejemplo 5, con
-   espera creciente). 🔴 **Con límite, no infinito**: upstream lo metió ahí por los bucles de
-   reconexión, y quitarlo sin freno reabre ese problema.
-2. **Que `logout.instance` no llame a `cleaningUp()` cuando el cierre es un 408.** Borrar la
-   credencial solo tiene sentido en un **401** —donde ya no sirve—, nunca en un corte de red.
-   Si se toca una sola cosa de las dos, que sea esta: es la que convierte 40 segundos sin red en
-   una vuelta por los teléfonos de los clientes.
-3. **Respaldo horario de la tabla `Session`** fuera de la base, para no depender de que las tuplas
-   sobrevivan. Es la red de seguridad que hace innecesario el rescate forense.
-
-Y en el watchdog (`scripts/sitios/evo-watch.sh`, en la carpeta de la agencia), dos cosas más: que
-**no escriba `OK` con instancias caídas** —el 6 sep dijo `OK` cinco horas seguidas con 5 de 6
-muertas— y que, viendo una caída por 408 sin sesión en la base, **restaure desde el respaldo y
-reconecte sola**.
+- **Proponer el arreglo a upstream.** El `cleaningUp()` en un 408 le pasa a todo el mundo que use
+  Evolution, no solo a nosotros.
+- **Vigilancia desde fuera** de la VPS2: hoy nadie confirma un corte de red del proveedor salvo por
+  sus consecuencias.
+- ⚠️ **Al actualizar Evolution de versión hay que rehacer esta rama sobre el tag nuevo**, o el
+  montaje del `dist` tapa el backend nuevo y **nada avisa**.
 
 ---
 
