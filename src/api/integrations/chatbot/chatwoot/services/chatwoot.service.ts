@@ -1957,6 +1957,9 @@ export class ChatwootService {
       buttonsResponseMessage:
         msg.buttonsResponseMessage?.selectedDisplayText ?? msg.buttonsResponseMessage?.selectedButtonId,
       interactiveResponseMessage: this.getInteractiveResponseText(msg.interactiveResponseMessage),
+      // PD: los botones que manda Evolution con `sendButtons` van aquí, sin texto plano.
+      interactiveMessage: this.textoDeInteractivo(msg.interactiveMessage),
+      buttonsMessage: msg.buttonsMessage?.contentText,
     };
 
     return types;
@@ -1970,35 +1973,43 @@ export class ChatwootService {
   private getTemplateText(templateMessage: any): string | undefined {
     if (!templateMessage) return undefined;
 
-    const plantilla = templateMessage.interactiveMessageTemplate;
-
-    if (plantilla) {
-      const partes: string[] = [];
-
-      const titulo = plantilla.header?.title ?? plantilla.header?.text;
-      if (titulo) partes.push(`*${titulo}*`);
-      if (plantilla.body?.text) partes.push(plantilla.body.text);
-      if (plantilla.footer?.text) partes.push(`_${plantilla.footer.text}_`);
-
-      for (const boton of plantilla.nativeFlowMessage?.buttons ?? []) {
-        let etiqueta = boton?.name;
-        try {
-          const params = JSON.parse(boton?.buttonParamsJson ?? '{}');
-          etiqueta = params.display_text ?? params.title ?? etiqueta;
-        } catch {
-          // buttonParamsJson viene como cadena y puede no ser JSON válido: se deja el nombre.
-        }
-        if (etiqueta) partes.push(`▶️ ${etiqueta}`);
-      }
-
-      if (partes.length) return partes.join('\n\n');
-    }
+    const texto = this.textoDeInteractivo(templateMessage.interactiveMessageTemplate);
+    if (texto) return texto;
 
     const hidratada = templateMessage.hydratedTemplate ?? templateMessage.hydratedFourRowTemplate;
     if (hidratada?.hydratedContentText) return hidratada.hydratedContentText;
 
     // Última red: que se vea que hubo una plantilla, aunque no se pueda leer su texto.
     return templateMessage.templateId ? `▶️ plantilla ${templateMessage.templateId}` : undefined;
+  }
+
+  /**
+   * PD: arma el texto legible de un nodo interactivo —`interactiveMessage` (los botones que manda
+   * Evolution con `sendButtons`) o `interactiveMessageTemplate` (una plantilla de la Cloud API)—.
+   * Los dos tienen la misma forma: header, body, footer y los botones en `nativeFlowMessage`.
+   */
+  public textoDeInteractivo(nodo: any): string | undefined {
+    if (!nodo) return undefined;
+
+    const partes: string[] = [];
+
+    const titulo = nodo.header?.title ?? nodo.header?.text;
+    if (titulo) partes.push(`*${titulo}*`);
+    if (nodo.body?.text) partes.push(nodo.body.text);
+    if (nodo.footer?.text) partes.push(`_${nodo.footer.text}_`);
+
+    for (const boton of nodo.nativeFlowMessage?.buttons ?? []) {
+      let etiqueta = boton?.name;
+      try {
+        const params = JSON.parse(boton?.buttonParamsJson ?? '{}');
+        etiqueta = params.display_text ?? params.title ?? etiqueta;
+      } catch {
+        // buttonParamsJson viene como cadena y puede no ser JSON válido: se deja el nombre.
+      }
+      if (etiqueta) partes.push(`▶️ ${etiqueta}`);
+    }
+
+    return partes.length ? partes.join('\n\n') : undefined;
   }
 
   /** PD: respuesta del usuario a un botón de flujo nativo (nativeFlowResponseMessage). */
@@ -2546,10 +2557,39 @@ export class ChatwootService {
                 quotedMsg,
               );
               if (!send) this.logger.warn('message not sent');
+            }
+          }
+
+          // PD: upstream solo mapeó el caso del PIX brasileño; cualquier otro botón —quick_reply,
+          // cta_url…— caía en un `else` que solo escribía «Interactive Button Message not mapped»,
+          // así que el mensaje NO se creaba y la conversación no mostraba nada. Ahora se escribe
+          // con su texto y sus botones, una sola vez (el bucle de arriba recorre botones, no
+          // mensajes: por eso el aviso salía tres veces con tres botones).
+          const yaSeEscribioElPix = buttons.some(
+            (b: any) => b.name === 'payment_info' && JSON.parse(b.buttonParamsJson ?? '{}').payment_settings,
+          );
+
+          if (!yaSeEscribioElPix) {
+            const contenido = this.textoDeInteractivo(body.message.interactiveMessage);
+
+            if (contenido) {
+              const send = await this.createMessage(
+                instance,
+                getConversation,
+                contenido,
+                messageType,
+                false,
+                [],
+                body,
+                'WAID:' + body.key.id,
+                quotedMsg,
+              );
+              if (!send) this.logger.warn('message not sent');
             } else {
               this.logger.warn('Interactive Button Message not mapped');
             }
           }
+
           return;
         }
 
