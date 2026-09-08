@@ -540,3 +540,41 @@ que no llega no se lee en absoluto.
 y `TarjetaWhatsapp.vue` es la presentación común que comparte con la plantilla oficial, para que una
 plantilla y unos botones **se vean exactamente igual**. Va con sus pruebas, y **fallan si se quita el
 arreglo** (comprobado).
+
+### 🔴 El PIX es de Brasil y NO se puede disfrazar (8 sep 2026)
+
+Preguntó Luis: *«en LATAM no se usa PIX ni se conoce… ¿cómo lo personalizamos con algún otro método,
+ejemplo Binance, o incluso un pago móvil Bs Venezuela? ¿Se le puede meter logo?»*. La respuesta corta
+es **no**, y conviene que esté escrita para no volver a intentarlo:
+
+- **`type: "pix"` no es un botón de texto: es una función nativa de WhatsApp Pay Brasil.** Se traduce
+  a `payment_info` + `pix_static_code` (`whatsapp.baileys.service.ts`, `toJSONString`), y **la tarjeta
+  la dibuja el cliente de WhatsApp**: el icono, el rótulo y el texto del botón no son nuestros.
+- **El `keyType` solo acepta llaves brasileñas**: `cpf`, `cnpj`, `phone`, `email` y `random` (EVP).
+  Una cédula venezolana o una dirección USDT no encajan en ninguna.
+- 🔴 **Y al PIX NO se le puede poner logo.** El bloque del PIX en `buttonMessage()` hace `return`
+  **antes** de la sección del encabezado, así que el `thumbnailUrl` no llega a aplicarse nunca.
+
+**Lo que sí sirve en LATAM: `cta_copy` con imagen de cabecera.** Es genérico, el texto lo pone uno, y
+sirve igual para Pago Móvil, una transferencia local, Zelle o Binance:
+
+```json
+{
+  "title": "Pago Móvil · Banesco",
+  "description": "Cédula V-12.345.678\nTeléfono 0414-1234567\nBanco 0134",
+  "footer": "Envía el comprobante por aquí",
+  "thumbnailUrl": "https://…/logo-banesco.png",
+  "buttons": [
+    { "type": "copy", "displayText": "📋 Copiar cédula", "copyCode": "V-12345678" },
+    { "type": "url", "displayText": "🌐 Ver instrucciones", "url": "https://…" }
+  ]
+}
+```
+
+**Dos reglas que impone WhatsApp:** máximo **2 botones CTA** por mensaje, y **no se mezclan** los de
+copiar/enlace con los de respuesta rápida (lo valida `buttonMessage()` y responde 400).
+
+🔴 **Ese logo no llegaba a Chatwoot.** La imagen de un interactivo vive en `header.imageMessage`, y
+`isMediaMessage` **solo mira las claves de primer nivel** del mensaje: para él, un interactivo con
+logo no es un mensaje con medio. Se quedaba en el teléfono, igual que las fotos del catálogo. Ahora
+`enviarBotonesConLogo()` la baja y la sube como adjunto, y el fork la pinta arriba de la tarjeta.

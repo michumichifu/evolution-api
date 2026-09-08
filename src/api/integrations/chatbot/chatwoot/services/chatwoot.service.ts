@@ -1198,35 +1198,31 @@ export class ChatwootService {
   }
 
   /**
-   * PD: manda un catálogo (carrusel) a Chatwoot con SUS IMÁGENES.
+   * PD: manda a Chatwoot un interactivo que trae imágenes —el catálogo, con una por tarjeta, o unos
+   * botones con su logo de cabecera—.
    *
-   * Cada tarjeta lleva su foto dentro de `header.imageMessage`, y las de WhatsApp van **cifradas**:
-   * no basta con la URL, hay que descargarlas con la `mediaKey` del propio mensaje. Se suben las
-   * varias imágenes como adjuntos del MISMO mensaje y la estructura dice, por posición, cuál va con
-   * cada tarjeta.
+   * Las imágenes de WhatsApp van **cifradas**: no basta con la URL, hay que descargarlas con la
+   * `mediaKey` del propio mensaje. Se suben como varios `attachments[]` del MISMO mensaje y la
+   * estructura anota, por posición, cuál va con cada cosa.
    *
    * 🔴 Devuelve `false` si algo falla, para que quien llama siga por el camino de texto: un catálogo
    * sin fotos se lee mal, pero un mensaje que no llega no se lee en absoluto.
    */
-  private async enviarCarrusel(
+  private async enviarInteractivoConImagenes(
     instance: InstanceDto,
     waInstance: any,
     conversationId: number,
     messageType: 'incoming' | 'outgoing',
     body: any,
+    estructura: Record<string, any>,
+    imagenes: Array<{ imagen: any; anotar: (indice: number) => void }>,
+    texto: string,
   ): Promise<any> {
-    const estructura = this.estructuraDeCarrusel(body.message.interactiveMessage);
-
-    if (!estructura) return false;
-
     try {
-      const tarjetas = body.message.interactiveMessage.carouselMessage.cards ?? [];
       const data = new FormData();
-      let imagenes = 0;
+      let subidas = 0;
 
-      for (const [posicion, tarjeta] of tarjetas.entries()) {
-        const imagen = tarjeta?.header?.imageMessage;
-
+      for (const { imagen, anotar } of imagenes) {
         if (!imagen) continue;
 
         // Se le pasa un mensaje armado a mano con SOLO esa imagen: el descargador de Baileys
@@ -1236,7 +1232,7 @@ export class ChatwootService {
         });
 
         if (!media?.base64) {
-          this.logger.warn(`[PD] no se pudo bajar la imagen de la tarjeta ${posicion} del catálogo`);
+          this.logger.warn('[PD] no se pudo bajar una imagen del interactivo');
           continue;
         }
 
@@ -1247,18 +1243,18 @@ export class ChatwootService {
 
         const extension = mimeTypes.extension(media.mimetype) || 'jpg';
 
-        data.append('attachments[]', flujo, { filename: `catalogo-${posicion + 1}.${extension}` });
-        estructura.tarjetas[posicion].adjunto = imagenes;
-        imagenes += 1;
+        data.append('attachments[]', flujo, { filename: `whatsapp-${subidas + 1}.${extension}` });
+        anotar(subidas);
+        subidas += 1;
       }
 
-      if (!imagenes) return false;
+      if (!subidas) return false;
 
       const atributos: Record<string, any> = { pd_interactivo: estructura };
 
       if (messageType === 'outgoing') atributos.external_echo = true;
 
-      data.append('content', this.aMarkdownDeChatwoot(this.textoDeCarrusel(estructura)) ?? '');
+      data.append('content', texto ?? '');
       data.append('message_type', messageType);
       data.append('content_attributes', JSON.stringify(atributos));
       data.append('source_id', 'WAID:' + body.key.id);
@@ -1272,13 +1268,78 @@ export class ChatwootService {
         },
       );
 
-      this.logger.info(`[PD] catálogo enviado a Chatwoot con ${imagenes} imágenes`);
+      this.logger.info(`[PD] interactivo enviado a Chatwoot con ${subidas} imagen(es)`);
 
       return respuesta?.data ?? true;
     } catch (error) {
-      this.logger.error(`[PD] no se pudo enviar el catálogo: ${error?.message ?? error}`);
+      this.logger.error(`[PD] no se pudo enviar el interactivo con imágenes: ${error?.message ?? error}`);
       return false;
     }
+  }
+
+  /**
+   * PD: el catálogo. Cada tarjeta lleva su foto dentro de `header.imageMessage`.
+   */
+  private async enviarCarrusel(
+    instance: InstanceDto,
+    waInstance: any,
+    conversationId: number,
+    messageType: 'incoming' | 'outgoing',
+    body: any,
+  ): Promise<any> {
+    const estructura = this.estructuraDeCarrusel(body.message.interactiveMessage);
+
+    if (!estructura) return false;
+
+    const tarjetas = body.message.interactiveMessage.carouselMessage.cards ?? [];
+
+    const imagenes = tarjetas.map((tarjeta: any, posicion: number) => ({
+      imagen: tarjeta?.header?.imageMessage,
+      anotar: (indice: number) => {
+        estructura.tarjetas[posicion].adjunto = indice;
+      },
+    }));
+
+    return this.enviarInteractivoConImagenes(
+      instance,
+      waInstance,
+      conversationId,
+      messageType,
+      body,
+      estructura,
+      imagenes,
+      this.aMarkdownDeChatwoot(this.textoDeCarrusel(estructura)) ?? '',
+    );
+  }
+
+  /**
+   * PD: unos botones con logo de cabecera —lo que se manda como `thumbnailUrl`—. Es lo que sirve en
+   * LATAM para un pago: el PIX es de Brasil, lo dibuja WhatsApp y **no admite imagen**, así que un
+   * cobro por transferencia, Pago Móvil o Binance se arma con `cta_copy` y su logo.
+   */
+  private async enviarBotonesConLogo(
+    instance: InstanceDto,
+    waInstance: any,
+    conversationId: number,
+    messageType: 'incoming' | 'outgoing',
+    body: any,
+    texto: string,
+  ): Promise<any> {
+    const nodo = body.message.interactiveMessage;
+    const estructura = this.estructuraDeBotones(nodo);
+
+    if (!estructura?.conImagen) return false;
+
+    return this.enviarInteractivoConImagenes(
+      instance,
+      waInstance,
+      conversationId,
+      messageType,
+      body,
+      estructura,
+      [{ imagen: nodo.header.imageMessage, anotar: (indice: number) => (estructura.adjunto = indice) }],
+      texto,
+    );
   }
 
   /**
@@ -2321,7 +2382,17 @@ export class ChatwootService {
 
     // 🔴 El cuerpo va traducido al formato de Chatwoot, porque lo pinta el mismo renderizador de
     // markdown que el resto: en WhatsApp `*x*` es negrita y en markdown-it es CURSIVA.
-    return { clase: 'botones', encabezado, cuerpo: this.aMarkdownDeChatwoot(cuerpo), pie, botones };
+    return {
+      clase: 'botones',
+      encabezado,
+      cuerpo: this.aMarkdownDeChatwoot(cuerpo),
+      pie,
+      botones,
+      // El `thumbnailUrl` del envío llega aquí como imagen de cabecera. NO cuenta como «mensaje con
+      // medio» —`isMediaMessage` solo mira las claves de primer nivel—, así que sin subirla aparte
+      // el logo se queda en el teléfono.
+      conImagen: !!nodo.header?.imageMessage,
+    };
   }
 
   /**
@@ -3005,6 +3076,21 @@ export class ChatwootService {
 
           if (!yaSeEscribioElPix) {
             const contenido = this.aMarkdownDeChatwoot(this.textoDeInteractivo(body.message.interactiveMessage));
+
+            // Con logo de cabecera hay que subir la imagen, y eso va por otro camino.
+            if (body.message.interactiveMessage?.header?.imageMessage) {
+              const conLogo = await this.enviarBotonesConLogo(
+                instance,
+                waInstance,
+                getConversation,
+                messageType,
+                body,
+                contenido ?? '',
+              );
+
+              if (conLogo) return conLogo;
+              // Si la imagen no se pudo bajar, sigue el camino normal: mejor sin logo que sin nada.
+            }
 
             if (contenido) {
               const send = await this.createMessage(
