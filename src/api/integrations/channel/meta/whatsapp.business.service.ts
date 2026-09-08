@@ -131,7 +131,14 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       this.loadChatwoot();
 
-      const senderJid = createJid(content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id);
+      // PD: quien oculta su número en Cloud API no manda `from`, sino `from_user_id` (o el
+      // `user_id` del contacto); en los estados, `recipient_user_id`. Sin esto el evento se
+      // quedaba sin remitente y la conversación no se creaba.
+      const senderJid = createJid(
+        content.messages
+          ? content.messages[0].from || content.messages[0].from_user_id || content.contacts?.[0]?.user_id
+          : content.statuses[0]?.recipient_id || content.statuses[0]?.recipient_user_id,
+      );
       this.phoneNumber = senderJid;
 
       await this.eventHandler(content, senderJid);
@@ -388,7 +395,8 @@ export class BusinessStartupService extends ChannelStartupService {
       let messageRaw: any;
       let pushName: any;
 
-      if (received.contacts) pushName = received.contacts[0].profile.name;
+      // PD: un contacto puede venir sin `profile`, y reventaba con «Cannot read properties of undefined (reading 'name')».
+      if (received.contacts) pushName = received.contacts[0]?.profile?.name;
 
       if (received.messages) {
         const message = received.messages[0];

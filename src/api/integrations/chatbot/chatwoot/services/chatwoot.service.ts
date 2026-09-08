@@ -1949,9 +1949,74 @@ export class ChatwootService {
         msg?.message?.viewOnceMessageV2?.message?.imageMessage?.url ||
         msg?.message?.viewOnceMessageV2?.message?.videoMessage?.url ||
         msg?.message?.viewOnceMessageV2?.message?.audioMessage?.url,
+      // PD: una plantilla de la Cloud API llega sin campo de texto plano, así que Chatwoot la
+      // descartaba con «no body message found» y la conversación no mostraba nada.
+      templateMessage: this.getTemplateText(msg.templateMessage),
+      // PD: y la respuesta del usuario a un botón tampoco tiene texto plano en Baileys.
+      templateButtonReplyMessage: msg.templateButtonReplyMessage?.selectedDisplayText,
+      buttonsResponseMessage:
+        msg.buttonsResponseMessage?.selectedDisplayText ?? msg.buttonsResponseMessage?.selectedButtonId,
+      interactiveResponseMessage: this.getInteractiveResponseText(msg.interactiveResponseMessage),
     };
 
     return types;
+  }
+
+  /**
+   * PD: arma el texto de una plantilla para que se vea en Chatwoot.
+   * Cubre las dos formas en que llega: `interactiveMessageTemplate` (lo que emite la Cloud API en
+   * coexistencia) y las `hydratedTemplate` clásicas de Baileys.
+   */
+  private getTemplateText(templateMessage: any): string | undefined {
+    if (!templateMessage) return undefined;
+
+    const plantilla = templateMessage.interactiveMessageTemplate;
+
+    if (plantilla) {
+      const partes: string[] = [];
+
+      const titulo = plantilla.header?.title ?? plantilla.header?.text;
+      if (titulo) partes.push(`*${titulo}*`);
+      if (plantilla.body?.text) partes.push(plantilla.body.text);
+      if (plantilla.footer?.text) partes.push(`_${plantilla.footer.text}_`);
+
+      for (const boton of plantilla.nativeFlowMessage?.buttons ?? []) {
+        let etiqueta = boton?.name;
+        try {
+          const params = JSON.parse(boton?.buttonParamsJson ?? '{}');
+          etiqueta = params.display_text ?? params.title ?? etiqueta;
+        } catch {
+          // buttonParamsJson viene como cadena y puede no ser JSON válido: se deja el nombre.
+        }
+        if (etiqueta) partes.push(`▶️ ${etiqueta}`);
+      }
+
+      if (partes.length) return partes.join('\n\n');
+    }
+
+    const hidratada = templateMessage.hydratedTemplate ?? templateMessage.hydratedFourRowTemplate;
+    if (hidratada?.hydratedContentText) return hidratada.hydratedContentText;
+
+    // Última red: que se vea que hubo una plantilla, aunque no se pueda leer su texto.
+    return templateMessage.templateId ? `▶️ plantilla ${templateMessage.templateId}` : undefined;
+  }
+
+  /** PD: respuesta del usuario a un botón de flujo nativo (nativeFlowResponseMessage). */
+  private getInteractiveResponseText(interactiveResponseMessage: any): string | undefined {
+    if (!interactiveResponseMessage) return undefined;
+
+    const respuesta = interactiveResponseMessage.nativeFlowResponseMessage;
+    if (respuesta?.paramsJson) {
+      try {
+        const params = JSON.parse(respuesta.paramsJson);
+        const texto = params.display_text ?? params.title ?? params.id;
+        if (texto) return texto;
+      } catch {
+        // igual que arriba: si no es JSON válido, se cae al nombre del flujo.
+      }
+    }
+
+    return respuesta?.name ?? interactiveResponseMessage.body?.text;
   }
 
   private getMessageContent(types: any) {
