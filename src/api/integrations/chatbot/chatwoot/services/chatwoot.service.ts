@@ -1024,6 +1024,9 @@ export class ChatwootService {
     messageBody?: any,
     sourceId?: string,
     quotedMsg?: MessageModel,
+    // PD: estructura del mensaje interactivo (botones, lista, PIX, catálogo) para que Chatwoot lo
+    // pinte como tarjeta en vez de como texto. Viaja en `content_attributes.pd_interactivo`.
+    interactivo?: Record<string, any>,
   ) {
     const client = await this.clientCw(instance);
 
@@ -1082,6 +1085,16 @@ export class ChatwootService {
       messageData.content_attributes = {
         ...(messageData.content_attributes || {}),
         external_echo: true,
+      };
+    }
+
+    // PD: la estructura del interactivo, si la hay. El `content` sigue llevando el texto de
+    // siempre: es lo que se lee en el correo de notificación, en el buscador y en cualquier
+    // cliente que no sea nuestro fork.
+    if (interactivo) {
+      messageData.content_attributes = {
+        ...(messageData.content_attributes || {}),
+        pd_interactivo: interactivo,
       };
     }
 
@@ -1182,6 +1195,110 @@ export class ChatwootService {
     }
 
     return message;
+  }
+
+  /**
+   * PD: manda un catálogo (carrusel) a Chatwoot con SUS IMÁGENES.
+   *
+   * Cada tarjeta lleva su foto dentro de `header.imageMessage`, y las de WhatsApp van **cifradas**:
+   * no basta con la URL, hay que descargarlas con la `mediaKey` del propio mensaje. Se suben las
+   * varias imágenes como adjuntos del MISMO mensaje y la estructura dice, por posición, cuál va con
+   * cada tarjeta.
+   *
+   * 🔴 Devuelve `false` si algo falla, para que quien llama siga por el camino de texto: un catálogo
+   * sin fotos se lee mal, pero un mensaje que no llega no se lee en absoluto.
+   */
+  private async enviarCarrusel(
+    instance: InstanceDto,
+    waInstance: any,
+    conversationId: number,
+    messageType: 'incoming' | 'outgoing',
+    body: any,
+  ): Promise<any> {
+    const estructura = this.estructuraDeCarrusel(body.message.interactiveMessage);
+
+    if (!estructura) return false;
+
+    try {
+      const tarjetas = body.message.interactiveMessage.carouselMessage.cards ?? [];
+      const data = new FormData();
+      let imagenes = 0;
+
+      for (const [posicion, tarjeta] of tarjetas.entries()) {
+        const imagen = tarjeta?.header?.imageMessage;
+
+        if (!imagen) continue;
+
+        // Se le pasa un mensaje armado a mano con SOLO esa imagen: el descargador de Baileys
+        // necesita la `key` original para descifrarla.
+        const media = await waInstance?.getBase64FromMediaMessage({
+          message: { key: body.key, message: { imageMessage: imagen } },
+        });
+
+        if (!media?.base64) {
+          this.logger.warn(`[PD] no se pudo bajar la imagen de la tarjeta ${posicion} del catálogo`);
+          continue;
+        }
+
+        const flujo = new Readable();
+        flujo._read = () => {};
+        flujo.push(Buffer.from(media.base64, 'base64'));
+        flujo.push(null);
+
+        const extension = mimeTypes.extension(media.mimetype) || 'jpg';
+
+        data.append('attachments[]', flujo, { filename: `catalogo-${posicion + 1}.${extension}` });
+        estructura.tarjetas[posicion].adjunto = imagenes;
+        imagenes += 1;
+      }
+
+      if (!imagenes) return false;
+
+      const atributos: Record<string, any> = { pd_interactivo: estructura };
+
+      if (messageType === 'outgoing') atributos.external_echo = true;
+
+      data.append('content', this.aMarkdownDeChatwoot(this.textoDeCarrusel(estructura)) ?? '');
+      data.append('message_type', messageType);
+      data.append('content_attributes', JSON.stringify(atributos));
+      data.append('source_id', 'WAID:' + body.key.id);
+
+      const respuesta = await axios.post(
+        `${this.provider.url}/api/v1/accounts/${this.provider.accountId}/conversations/${conversationId}/messages`,
+        data,
+        {
+          maxBodyLength: Infinity,
+          headers: { api_access_token: this.provider.token, ...data.getHeaders() },
+        },
+      );
+
+      this.logger.info(`[PD] catálogo enviado a Chatwoot con ${imagenes} imágenes`);
+
+      return respuesta?.data ?? true;
+    } catch (error) {
+      this.logger.error(`[PD] no se pudo enviar el catálogo: ${error?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /**
+   * PD: el texto de respaldo de un catálogo, para el correo de notificación, el buscador y
+   * cualquier cliente que no pinte la tarjeta.
+   */
+  private textoDeCarrusel(estructura: Record<string, any>): string {
+    const lineas: string[] = [];
+
+    if (estructura.cuerpo) lineas.push(`*${estructura.cuerpo}*`);
+
+    for (const tarjeta of estructura.tarjetas ?? []) {
+      const partes = [tarjeta.cuerpo, tarjeta.pie].filter(Boolean).join(' — ');
+
+      if (partes) lineas.push(`▪️ ${partes}`);
+    }
+
+    if (estructura.pie) lineas.push(`_${estructura.pie}_`);
+
+    return lineas.join('\n');
   }
 
   private async sendData(
@@ -2031,6 +2148,202 @@ export class ChatwootService {
   }
 
   /**
+   * PD: la etiqueta de un botón no es texto suelto: vive dentro de `buttonParamsJson`, que es una
+   * CADENA JSON dentro del propio botón. Se parsea con try/catch porque no siempre es válida.
+   */
+  private parametrosDeBoton(boton: any): Record<string, any> {
+    try {
+      return JSON.parse(boton?.buttonParamsJson ?? '{}');
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * PD: normaliza los botones de un `nativeFlowMessage` a la forma que pinta Chatwoot.
+   *
+   * `name` dice de qué clase es cada uno, y cada clase guarda su dato en una llave distinta:
+   * `cta_url` lleva `url`, `cta_copy` lleva `copy_code`, `cta_call` lleva `phone_number` y
+   * `quick_reply` solo lleva su `id`, porque lo único que hace es contestar.
+   */
+  private botonesNormalizados(nodo: any): Array<Record<string, any>> {
+    const botones: Array<Record<string, any>> = [];
+
+    for (const boton of nodo?.nativeFlowMessage?.buttons ?? []) {
+      const params = this.parametrosDeBoton(boton);
+      const texto = params.display_text ?? params.title ?? boton?.name;
+
+      if (!texto) continue;
+
+      const clase =
+        {
+          cta_url: 'url',
+          cta_copy: 'copiar',
+          cta_call: 'llamar',
+          quick_reply: 'respuesta',
+        }[boton?.name as string] ?? 'respuesta';
+
+      botones.push({
+        clase,
+        texto,
+        ...(params.url ? { url: params.url } : {}),
+        ...(params.copy_code ? { codigo: params.copy_code } : {}),
+        ...(params.phone_number ? { telefono: params.phone_number } : {}),
+        ...(params.id ? { id: params.id } : {}),
+      });
+    }
+
+    return botones;
+  }
+
+  /**
+   * PD: el PIX no es un botón normal. Viene como un `payment_info` cuyo `buttonParamsJson` trae
+   * `payment_settings[0].pix_static_code` con el comercio y la clave. En WhatsApp se ve como una
+   * tarjeta con su botón «Copiar clave Pix».
+   */
+  private estructuraDePix(nodo: any): Record<string, any> | undefined {
+    for (const boton of nodo?.nativeFlowMessage?.buttons ?? []) {
+      if (boton?.name !== 'payment_info') continue;
+
+      const ajustes = this.parametrosDeBoton(boton)?.payment_settings?.[0];
+      const pix = ajustes?.pix_static_code;
+
+      if (ajustes?.type !== 'pix_static_code' || !pix) continue;
+
+      const tipoClave =
+        { EVP: 'Chave Aleatória', EMAIL: 'E-mail', PHONE: 'Telefone' }[pix.key_type as string] ?? pix.key_type;
+
+      return {
+        clase: 'pix',
+        comercio: pix.merchant_name,
+        clave: pix.key_type === 'PHONE' ? String(pix.key).replace('+55', '') : pix.key,
+        tipoClave,
+      };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * PD: un carrusel (el catálogo) son varias tarjetas, cada una con su imagen, su texto, su pie y
+   * sus botones. La imagen NO viaja aquí: las de WhatsApp van cifradas y se descargan aparte, así
+   * que cada tarjeta guarda su posición y Chatwoot la casa con el adjunto que le toca.
+   */
+  private estructuraDeCarrusel(nodo: any): Record<string, any> | undefined {
+    const tarjetas = nodo?.carouselMessage?.cards;
+
+    if (!tarjetas?.length) return undefined;
+
+    return {
+      clase: 'carrusel',
+      cuerpo: nodo?.body?.text,
+      pie: nodo?.footer?.text,
+      tarjetas: tarjetas.map((tarjeta: any, posicion: number) => ({
+        posicion,
+        titulo: tarjeta?.header?.title ?? tarjeta?.header?.text,
+        cuerpo: tarjeta?.body?.text,
+        pie: tarjeta?.footer?.text,
+        conImagen: !!tarjeta?.header?.imageMessage,
+        botones: this.botonesNormalizados(tarjeta),
+      })),
+    };
+  }
+
+  /**
+   * PD: un menú de lista NO se enseña abierto. En WhatsApp es UN botón («Ver opciones») que abre
+   * las secciones en un panel, y así tiene que verse en la bandeja: upstream lo volcaba entero en
+   * crudo —«Section 1: / Line 1: / Title: / Description: / ID:», en inglés— y en un menú de tres
+   * servicios eso son catorce líneas ilegibles.
+   */
+  private estructuraDeLista(lista: any): Record<string, any> | undefined {
+    if (!lista) return undefined;
+
+    return {
+      clase: 'lista',
+      encabezado: lista.title,
+      cuerpo: lista.description,
+      pie: lista.footerText,
+      textoBoton: lista.buttonText || 'Ver opciones',
+      secciones: (lista.sections ?? []).map((seccion: any) => ({
+        titulo: seccion?.title,
+        filas: (seccion?.rows ?? []).map((fila: any) => ({
+          titulo: fila?.title,
+          descripcion: fila?.description,
+          id: fila?.rowId,
+        })),
+      })),
+    };
+  }
+
+  /**
+   * PD: lo que eligió la persona, ya sea de una lista o de un botón. Se pinta distinto de un
+   * mensaje suelto: es una respuesta a algo que le enseñamos.
+   */
+  private estructuraDeRespuesta(mensaje: any): Record<string, any> | undefined {
+    const deLista = mensaje?.listResponseMessage;
+
+    if (deLista) {
+      return {
+        clase: 'respuesta',
+        titulo: deLista.title,
+        descripcion: deLista.description,
+        id: deLista.singleSelectReply?.selectedRowId,
+      };
+    }
+
+    const deBoton = mensaje?.templateButtonReplyMessage ?? mensaje?.buttonsResponseMessage;
+
+    if (deBoton) {
+      return {
+        clase: 'respuesta',
+        titulo: deBoton.selectedDisplayText ?? deBoton.selectedButtonId,
+        id: deBoton.selectedId ?? deBoton.selectedButtonId,
+      };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * PD: el interactivo genérico —los botones de respuesta rápida y los CTA—. El encabezado puede
+   * venir en `header` o, como hace el propio Evolution al mandarlos, en negrita dentro del cuerpo:
+   * eso se deja tal cual, que el cuerpo se pinta con su formato.
+   */
+  private estructuraDeBotones(nodo: any): Record<string, any> | undefined {
+    if (!nodo) return undefined;
+
+    const botones = this.botonesNormalizados(nodo);
+    const encabezado = nodo.header?.title ?? nodo.header?.text;
+    const cuerpo = nodo.body?.text;
+    const pie = nodo.footer?.text;
+
+    if (!botones.length && !encabezado && !pie) return undefined;
+
+    // 🔴 El cuerpo va traducido al formato de Chatwoot, porque lo pinta el mismo renderizador de
+    // markdown que el resto: en WhatsApp `*x*` es negrita y en markdown-it es CURSIVA.
+    return { clase: 'botones', encabezado, cuerpo: this.aMarkdownDeChatwoot(cuerpo), pie, botones };
+  }
+
+  /**
+   * PD: el despachador. Mira el mensaje de WhatsApp y devuelve la estructura que Chatwoot sabe
+   * pintar, o `undefined` si es un mensaje corriente.
+   *
+   * 🔴 Esto NO sustituye al texto: el `content` del mensaje sigue siendo el de siempre. Si un día
+   * se quita el componente del fork, o alguien lee el correo de notificación, ahí está todo.
+   */
+  public estructuraDeInteractivo(mensaje: any): Record<string, any> | undefined {
+    if (!mensaje) return undefined;
+
+    const nodo = mensaje.interactiveMessage ?? mensaje.templateMessage?.interactiveMessageTemplate;
+
+    if (nodo) {
+      return this.estructuraDePix(nodo) ?? this.estructuraDeCarrusel(nodo) ?? this.estructuraDeBotones(nodo);
+    }
+
+    return this.estructuraDeLista(mensaje.listMessage) ?? this.estructuraDeRespuesta(mensaje);
+  }
+
+  /**
    * PD: lee los `template_params` que Chatwoot mete en el mensaje cuando el agente usa el selector
    * de plantillas. Devuelve `undefined` si no era una plantilla.
    *
@@ -2519,6 +2832,16 @@ export class ChatwootService {
 
         const messageType = body.key.fromMe ? 'outgoing' : 'incoming';
 
+        // PD: un catálogo (carrusel) trae una imagen POR TARJETA, y no pasa por el camino de medios
+        // —`isMediaMessage` no lo reconoce—, así que sin esto llegaba a la bandeja como una línea de
+        // texto («Catálogo de la semana») y las fotos se quedaban en WhatsApp.
+        if (body.message?.interactiveMessage?.carouselMessage?.cards?.length) {
+          const enviado = await this.enviarCarrusel(instance, waInstance, getConversation, messageType, body);
+
+          if (enviado) return enviado;
+          // Si falla, sigue el camino normal: mejor el texto suelto que nada.
+        }
+
         if (isMedia) {
           const downloadBase64 = await waInstance?.getBase64FromMediaMessage({
             message: {
@@ -2665,6 +2988,7 @@ export class ChatwootService {
                 body,
                 'WAID:' + body.key.id,
                 quotedMsg,
+                this.estructuraDeInteractivo(body.message),
               );
               if (!send) this.logger.warn('message not sent');
             }
@@ -2693,6 +3017,7 @@ export class ChatwootService {
                 body,
                 'WAID:' + body.key.id,
                 quotedMsg,
+                this.estructuraDeInteractivo(body.message),
               );
               if (!send) this.logger.warn('message not sent');
             } else {
@@ -2785,6 +3110,7 @@ export class ChatwootService {
             body,
             'WAID:' + body.key.id,
             quotedMsg,
+            this.estructuraDeInteractivo(body.message),
           );
 
           if (!send) {
@@ -2804,6 +3130,7 @@ export class ChatwootService {
             body,
             'WAID:' + body.key.id,
             quotedMsg,
+            this.estructuraDeInteractivo(body.message),
           );
 
           if (!send) {

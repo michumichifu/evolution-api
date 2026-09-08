@@ -463,3 +463,80 @@ equipo, o buscarán la plantilla donde no está.
 
 **El relato completo está en la carpeta de la agencia:**
 `Documentacion/INCIDENCIA - Los mensajes fuera de la ventana de 24 h no salen y Evolution los da por enviados (8 sep 2026).md`
+
+---
+
+## 🆕 De texto con markdown a TARJETA: los interactivos van con su estructura (8 sep 2026)
+
+Todo lo de arriba hacía que un interactivo **llegara** a Chatwoot. Esto hace que **se vea como en el
+teléfono**. Lo pidió Luis mirando las dos pantallas: *«hay ligeros detalles a pulir… el footer bien,
+con su color particular, tal cual lo establece; los altos de línea bien»*, y sobre el menú:
+*«en Chatwoot lo que está haciendo es desplegando las opciones completas de una vez, no debería»*.
+
+### El problema de fondo: un mensaje que es una tarjeta no cabe en un párrafo
+
+Un interactivo se convertía a **texto con markdown** y Chatwoot lo pintaba como cualquier párrafo.
+De ahí salía todo lo que se veía mal, y ninguna de las tres cosas se arregla escribiendo mejor el
+markdown, porque **el markdown no tiene forma de decir «esto es un pie» ni «esto es un botón»**:
+
+| Se veía | Debería |
+| :--- | :--- |
+| Pie en **cursiva**, y si es un dominio, en azul y subrayado (markdown-it lo autoenlaza) | Gris pequeño, como en WhatsApp |
+| Botones en líneas seguidas de un párrafo | Filas centradas, cada una con su línea de separación |
+| El menú de lista **volcado entero**: `Section 1: / Line 1: / Title: / Description: / ID:`, en inglés | **Un botón «Ver opciones»** que despliega |
+| El catálogo, una línea de texto y **las fotos perdidas** | Sus tarjetas con foto, precio y botón |
+
+### La solución: la estructura viaja aparte, y el texto se queda
+
+Evolution manda ahora, además del texto de siempre, **`content_attributes.pd_interactivo`** con la
+forma del mensaje, y el fork de Chatwoot la pinta.
+
+🔴 **El `content` NO se toca.** Es lo que se lee en el correo de notificación, en el buscador de
+Chatwoot y en cualquier cliente que no sea nuestro fork. Si un día se cae el componente, el mensaje
+sigue estando entero.
+
+**Las cinco clases y de dónde sale cada una:**
+
+| `clase` | Nace de | Qué lleva |
+| :--- | :--- | :--- |
+| `botones` | `interactiveMessage` / `interactiveMessageTemplate` | `encabezado`, `cuerpo`, `pie`, `botones[]` |
+| `lista` | `listMessage` | `encabezado`, `cuerpo`, `pie`, `textoBoton`, `secciones[].filas[]` |
+| `carrusel` | `interactiveMessage.carouselMessage` | `cuerpo`, `pie`, `tarjetas[]` con su `adjunto` |
+| `pix` | un botón `payment_info` con `pix_static_code` | `comercio`, `clave`, `tipoClave` |
+| `respuesta` | `listResponseMessage`, `templateButtonReplyMessage`, `buttonsResponseMessage` | `titulo`, `descripcion`, `id` |
+
+**Un botón se normaliza a `{ clase, texto, url?, codigo?, telefono?, id? }`.** La clase sale del
+`name` del botón, y cada una guarda su dato en una llave distinta: `cta_url` → `url`, `cta_copy` →
+`copy_code`, `cta_call` → `phone_number`, `quick_reply` → solo su `id`.
+
+### 🔴 El catálogo: las fotos van CIFRADAS y se suben aparte
+
+Cada tarjeta lleva su imagen en `header.imageMessage`, y las de WhatsApp **no se descargan con su
+URL**: van cifradas y hace falta la `mediaKey` del propio mensaje. `enviarCarrusel()` baja cada una
+con `getBase64FromMediaMessage` —pasándole un mensaje armado a mano con **la `key` original**, que es
+lo que permite descifrarla—, las sube como **varios `attachments[]` del mismo mensaje**, y anota en
+cada tarjeta el índice de su adjunto. Chatwoot las casa **por posición**.
+
+🔴 **Un carrusel NO pasa por el camino de medios**: `isMediaMessage` no lo reconoce, así que hay que
+interceptarlo antes. Sin eso llegaba una línea de texto y las fotos se quedaban en WhatsApp.
+
+🔴 **Si algo falla, se sigue por el camino de texto.** Un catálogo sin fotos se lee mal; un mensaje
+que no llega no se lee en absoluto.
+
+### 🔴 Tres trampas de esta tanda
+
+1. **El cuerpo de la estructura va traducido a markdown de Chatwoot** (`aMarkdownDeChatwoot`), porque
+   lo pinta el mismo renderizador: en WhatsApp `*x*` es negrita y en markdown-it es **cursiva**.
+2. **En la bandeja NO se pintan las dos cosas.** El texto del mensaje ya trae encabezado, pie y
+   botones; si además se pintara el `content`, saldría todo **dos veces**. El componente usa el
+   `cuerpo` de la estructura y deja el texto de respaldo sin usar.
+3. **El encabezado no siempre está en `header`.** Los botones que manda el propio Evolution lo llevan
+   **en negrita dentro del cuerpo** (`*Respuesta rápida*\n\nElige una de las opciones:`). Se deja
+   así: el cuerpo se pinta con su formato y se ve igual que en el teléfono.
+
+### La otra mitad, en el fork de Chatwoot
+
+`app/javascript/dashboard/components-next/message/bubbles/Text/` — `WhatsappInteractivo.vue` pinta,
+y `TarjetaWhatsapp.vue` es la presentación común que comparte con la plantilla oficial, para que una
+plantilla y unos botones **se vean exactamente igual**. Va con sus pruebas, y **fallan si se quita el
+arreglo** (comprobado).
