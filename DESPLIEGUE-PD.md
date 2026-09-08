@@ -12,7 +12,33 @@ compila y se despliega. **Nunca se edita el `dist` del servidor a mano** (ya pas
 | `fix(baileys): clear stale credentials when a 401 closes the initial connection` | Una instancia que perdía la sesión **no podía generar un QR nuevo nunca más**: conservaba la identidad en las credenciales y Baileys intentaba reautenticarse en vez de parear, en bucle. Es el PR [#2680](https://github.com/evolution-foundation/evolution-api/pull/2680) aguas arriba. |
 | `fix(baileys): retire the previous socket before creating a new one` | Dos sockets con las mismas credenciales se expulsaban entre sí (`conflict: replaced`, 440) en un bucle infinito. Ver abajo. |
 | `fix(chatwoot): el cliente del SDK no tiene .get ni .post` (`11d8c436`, 5 sep 2026) | **Ningún identificador `@lid` se resolvía nunca.** `findContactByIdentifier` llamaba a `(client as any).get('contacts/search')` y `(client as any).post('contacts/filter')`, y el `ChatwootClient` del SDK de `@figuro` **no tiene métodos HTTP genéricos**: el `as any` era lo único que dejaba compilarlo. Reventaba siempre con `TypeError: t.get is not a function`, y el `catch` de `resolveLidToPhone` lo tragaba como un `warn`. Ver abajo. |
+| `fix(chatwoot): que se vean las plantillas y las respuestas a botones` (`31b4c4c5`, 8 sep 2026) | **Se mandaba una plantilla y en la bandeja no aparecía nada.** Llega como `templateMessage`, con el texto dentro de `interactiveMessageTemplate`, y `getTypeMessage` no lo contemplaba: se descartaba con un WARN **«no body message found»**. Igual con la respuesta del usuario a un botón (`templateButtonReplyMessage`, `buttonsResponseMessage`, `interactiveResponseMessage`). Lleva además **dos parches que estaban solo en el `main.js` del servidor** — ver abajo. |
 | `feat(chatwoot): guardar el usuario de WhatsApp de quien oculta su número` (`aa770124`, 5 sep 2026) | Quien esconde su número llega **sin teléfono**, solo con el `@lid`, y acababa guardado como `+105828497510423`, que no es ningún número. Ahora se guardan además `whatsapp_usuario` y `whatsapp_lid` en los atributos del contacto. Ver abajo. |
+
+## 🔴 EL 8 DE SEPTIEMBRE DE 2026 HABÍA DOS PARCHES SOLO EN EL SERVIDOR
+
+Al ir a desplegar, el `dist` de producción tenía **805 archivos y el compilado 803**. Los dos de más
+eran **respaldos del propio `main.js`**, con la fecha dentro del nombre:
+
+```
+main.js.bak-20260908-0205-pre-bsuid
+main.js.bak-20260908-0216-pre-fromuserid
+```
+
+Alguien había **editado el `main.js` a mano en la VPS2** esa madrugada, justo lo que este documento
+prohíbe. Los dos cambios eran buenos y **no estaban en el repo**:
+
+1. Aceptar `from_user_id` / `contacts[0].user_id` / `recipient_user_id` cuando el usuario **oculta su
+   número** (si no, el evento se queda sin remitente).
+2. Leer `contacts[0]?.profile?.name`, que reventaba con *«Cannot read properties of undefined
+   (reading 'name')»* — está en el log de la instancia **PD Cloud** del 7 sep a las 19:30.
+
+**Se portaron al fuente y viajan en el commit `31b4c4c5`.** Un `rsync --delete` los habría borrado
+**sin que nadie se enterara**, y el fallo habría vuelto días después sin causa aparente.
+
+🔴 **Por eso, antes de cada despliegue: contar los archivos de los dos lados y mirar QUÉ sobra.** Y
+el `rsync` va con `--exclude 'main.js.bak-*'`, para no llevarse los respaldos que dejó quien parcheó
+en caliente.
 
 🔴 **Se parte del TAG, no de `develop`.** `develop` lleva meses de cambios encima y desplegarlo sería
 un salto de versión encubierto. El PR #2680 se aplica **cherry-pickeando su commit**, no mezclando su
