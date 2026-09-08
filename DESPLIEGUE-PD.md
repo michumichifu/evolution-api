@@ -12,6 +12,7 @@ compila y se despliega. **Nunca se edita el `dist` del servidor a mano** (ya pas
 | `fix(baileys): clear stale credentials when a 401 closes the initial connection` | Una instancia que perdía la sesión **no podía generar un QR nuevo nunca más**: conservaba la identidad en las credenciales y Baileys intentaba reautenticarse en vez de parear, en bucle. Es el PR [#2680](https://github.com/evolution-foundation/evolution-api/pull/2680) aguas arriba. |
 | `fix(baileys): retire the previous socket before creating a new one` | Dos sockets con las mismas credenciales se expulsaban entre sí (`conflict: replaced`, 440) en un bucle infinito. Ver abajo. |
 | `fix(chatwoot): el cliente del SDK no tiene .get ni .post` (`11d8c436`, 5 sep 2026) | **Ningún identificador `@lid` se resolvía nunca.** `findContactByIdentifier` llamaba a `(client as any).get('contacts/search')` y `(client as any).post('contacts/filter')`, y el `ChatwootClient` del SDK de `@figuro` **no tiene métodos HTTP genéricos**: el `as any` era lo único que dejaba compilarlo. Reventaba siempre con `TypeError: t.get is not a function`, y el `catch` de `resolveLidToPhone` lo tragaba como un `warn`. Ver abajo. |
+| `fix(chatwoot): traducir el formato de WhatsApp también en los botones` (`c21a3193`, 8 sep 2026) | **El título de un mensaje con botones salía en cursiva, no en negrita.** WhatsApp escribe `*negrita*`; **Chatwoot pinta con markdown-it, donde `*x*` es CURSIVA** y la negrita es `**x**`. El flujo normal ya traducía, pero el camino de los botones **crea su propio mensaje y se lo saltaba**. Ver abajo. |
 | `fix(chatwoot): mostrar los botones interactivos, no solo el PIX` (`7ec44c20`, 8 sep 2026) | **Un mensaje con botones (`sendButtons`) no aparecía en Chatwoot.** El bloque `isInteractiveButtonMessage` de upstream **solo mapea un caso, el PIX brasileño**; cualquier otro botón —`quick_reply`, `cta_url`— caía en un `else` que se limitaba a escribir «Interactive Button Message not mapped», **una vez por botón**, porque el bucle recorre botones y no mensajes. Ver abajo. |
 | `fix(chatwoot): que se vean las plantillas y las respuestas a botones` (`31b4c4c5`, 8 sep 2026) | **Se mandaba una plantilla y en la bandeja no aparecía nada.** Llega como `templateMessage`, con el texto dentro de `interactiveMessageTemplate`, y `getTypeMessage` no lo contemplaba: se descartaba con un WARN **«no body message found»**. Igual con la respuesta del usuario a un botón (`templateButtonReplyMessage`, `buttonsResponseMessage`, `interactiveResponseMessage`). Lleva además **dos parches que estaban solo en el `main.js` del servidor** — ver abajo. |
 | `feat(chatwoot): guardar el usuario de WhatsApp de quien oculta su número` (`aa770124`, 5 sep 2026) | Quien esconde su número llega **sin teléfono**, solo con el `@lid`, y acababa guardado como `+105828497510423`, que no es ningún número. Ahora se guardan además `whatsapp_usuario` y `whatsapp_lid` en los atributos del contacto. Ver abajo. |
@@ -409,6 +410,49 @@ docker logs evolution-api --since 2m 2>&1 | grep -i -E "not mapped|no body messa
 
 🔴 **El envío devolvía `201` con su `wamid` ANTES y DESPUÉS del arreglo.** El código de salida no
 distinguía nada: lo único que lo distingue es **la fila en la base de Chatwoot**.
+
+### 3 bis. 🔴 El formato de WhatsApp NO es el de Chatwoot
+
+**WhatsApp** escribe `*negrita*`, `_cursiva_` y `~tachado~`.
+**Chatwoot** pinta con **markdown-it** (`MessageFormatter.js` del fork), donde `*x*` es **cursiva** y
+la negrita es `**x**`. Sin traducir, el título de un mensaje con botones se veía **en cursiva** —o
+con los asteriscos a la vista—, no como en el teléfono.
+
+La traducción existía **escrita a mano dentro del flujo normal**:
+
+```ts
+.replace(/\*((?!\s)([^\n*]+?)(?<!\s))\*/g, '**$1**')   // *negrita*  -> **negrita**
+.replace(/_((?!\s)([^\n_]+?)(?<!\s))_/g,   '*$1*')     // _cursiva_  -> *cursiva*
+.replace(/~((?!\s)([^\n~]+?)(?<!\s))~/g,   '~~$1~~')   // ~tachado~  -> ~~tachado~~
+```
+
+Ahora es el método **`aMarkdownDeChatwoot`** y lo usan **los dos caminos**.
+
+🔴 **Se escribe en formato de WhatsApp y se traduce al final; nunca al revés.** Generar `**x**`
+directamente lo rompe: el primer regex volvería a envolverlo y saldría `***x***`.
+
+🔴 **Va con `replace(/…/g)`, no con `replaceAll`.** El `lib` del proyecto es anterior a ES2021 y
+sobre un `string` tipado el compilador lo rechaza (`TS2550`); en el flujo original colaba porque la
+variable era `any`.
+
+**Lo que se guarda ahora en Chatwoot, comprobado en la base:**
+
+```
+**Respuesta rápida**
+
+Elige una de las opciones:
+
+*Proyección Digital*
+
+---
+↩ **✅ Confirmar**
+↩ **❌ Cancelar**
+↩ **🤔 Tal vez**
+```
+
+La línea de guiones es un `<hr>` en markdown-it: es el separador que WhatsApp dibuja entre las
+opciones. ⚠️ **`lheading` está deshabilitado en el formateador del fork**, así que unos guiones
+debajo de una línea de texto **no** se convierten en un título.
 
 ### 4. 🔴 Sale por la Cloud API y se ve en la bandeja del QR
 
