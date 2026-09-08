@@ -12,6 +12,7 @@ compila y se despliega. **Nunca se edita el `dist` del servidor a mano** (ya pas
 | `fix(baileys): clear stale credentials when a 401 closes the initial connection` | Una instancia que perdía la sesión **no podía generar un QR nuevo nunca más**: conservaba la identidad en las credenciales y Baileys intentaba reautenticarse en vez de parear, en bucle. Es el PR [#2680](https://github.com/evolution-foundation/evolution-api/pull/2680) aguas arriba. |
 | `fix(baileys): retire the previous socket before creating a new one` | Dos sockets con las mismas credenciales se expulsaban entre sí (`conflict: replaced`, 440) en un bucle infinito. Ver abajo. |
 | `fix(chatwoot): el cliente del SDK no tiene .get ni .post` (`11d8c436`, 5 sep 2026) | **Ningún identificador `@lid` se resolvía nunca.** `findContactByIdentifier` llamaba a `(client as any).get('contacts/search')` y `(client as any).post('contacts/filter')`, y el `ChatwootClient` del SDK de `@figuro` **no tiene métodos HTTP genéricos**: el `as any` era lo único que dejaba compilarlo. Reventaba siempre con `TypeError: t.get is not a function`, y el `catch` de `resolveLidToPhone` lo tragaba como un `warn`. Ver abajo. |
+| `fix(chatwoot): mostrar los botones interactivos, no solo el PIX` (`7ec44c20`, 8 sep 2026) | **Un mensaje con botones (`sendButtons`) no aparecía en Chatwoot.** El bloque `isInteractiveButtonMessage` de upstream **solo mapea un caso, el PIX brasileño**; cualquier otro botón —`quick_reply`, `cta_url`— caía en un `else` que se limitaba a escribir «Interactive Button Message not mapped», **una vez por botón**, porque el bucle recorre botones y no mensajes. Ver abajo. |
 | `fix(chatwoot): que se vean las plantillas y las respuestas a botones` (`31b4c4c5`, 8 sep 2026) | **Se mandaba una plantilla y en la bandeja no aparecía nada.** Llega como `templateMessage`, con el texto dentro de `interactiveMessageTemplate`, y `getTypeMessage` no lo contemplaba: se descartaba con un WARN **«no body message found»**. Igual con la respuesta del usuario a un botón (`templateButtonReplyMessage`, `buttonsResponseMessage`, `interactiveResponseMessage`). Lleva además **dos parches que estaban solo en el `main.js` del servidor** — ver abajo. |
 | `feat(chatwoot): guardar el usuario de WhatsApp de quien oculta su número` (`aa770124`, 5 sep 2026) | Quien esconde su número llega **sin teléfono**, solo con el `@lid`, y acababa guardado como `+105828497510423`, que no es ningún número. Ahora se guardan además `whatsapp_usuario` y `whatsapp_lid` en los atributos del contacto. Ver abajo. |
 
@@ -331,3 +332,90 @@ En la carpeta de la agencia, `Documentacion/`:
 - `INCIDENCIA - Evolution API, saturación del pool y falso fallo de reinicio 2026-08-05.md`
 
 Con copia en la VPS2, en `/root/documentacion/`. **Si se corrige una, se corrige la otra.**
+
+## Los mensajes con botones y las plantillas, en Chatwoot (8 sep 2026)
+
+**El síntoma, con las palabras de Luis:** *«Cuando se envían plantillas, ya sea desde donde sea que
+se envíen, no se ve la conversación… es como si no se hubiese mandado una y si no se hubiese
+respondido nada. Donde sí se ve realmente es directamente en el teléfono.»*
+
+**Dos causas distintas, las dos en `chatwoot.service.ts`.**
+
+### 1. La plantilla de Meta: `no body message found`
+
+`getConversationMessage` saca el texto con `getTypeMessage`, un objeto donde cada clave es un tipo de
+mensaje, y `getMessageContent` **coge la primera cuyo valor no sea `undefined`**. Si ninguna encaja,
+devuelve `undefined` y el mensaje **se descarta con un WARN**.
+
+Una plantilla llega como `templateMessage`, con el texto **dentro** de `interactiveMessageTemplate`:
+
+```json
+"templateMessage": {
+  "interactiveMessageTemplate": {
+    "header": { "title": "Guía de WhatsApp: Método Alana" },
+    "body":   { "text": "Hola 👋, Soy Luis Durán de Proyección Digital…" },
+    "footer": { "text": "proyecciondigital.org - República Dominicana" },
+    "nativeFlowMessage": { "buttons": [ { "name": "cta_url", "buttonParamsJson": "{…}" } ] }
+  },
+  "templateId": "2289240268147389"
+}
+```
+
+**Ningún campo de texto plano**, así que ninguna clave encajaba. Ahora se arma el texto —encabezado,
+cuerpo, pie y las etiquetas de los botones— con `textoDeInteractivo()`, y hay red por si acaso: las
+`hydratedTemplate` clásicas de Baileys y, en último caso, `▶️ plantilla <id>`, para que **al menos
+conste que hubo una**.
+
+### 2. Los botones: `Interactive Button Message not mapped`
+
+El bloque `isInteractiveButtonMessage` recorre los botones y **solo sabe crear el mensaje si es un
+PIX** (`name === 'payment_info'`). Todo lo demás caía en un `else` con un WARN, y al final del bloque
+hay un `return`: **el mensaje no se creaba nunca**. Con tres botones, el aviso salía **tres veces**,
+porque el bucle recorre botones, no mensajes.
+
+Ahora, si no era un PIX, se crea **un solo mensaje** con el texto armado por `textoDeInteractivo()`.
+
+🔴 **`interactiveMessage` (lo que manda `sendButtons`) y `interactiveMessageTemplate` (una plantilla)
+tienen la misma forma**, por eso el armador es uno.
+
+🔴 **La etiqueta de un botón no es texto**: vive dentro de `buttonParamsJson`, que es una **cadena
+JSON** (`{"display_text":"✅ Confirmar","id":"opt_confirm"}`). Se parsea con `try/catch`.
+
+### 3. La respuesta del usuario
+
+Se añadieron a `getTypeMessage` los tres tipos con los que llega: `templateButtonReplyMessage`
+(`selectedDisplayText`), `buttonsResponseMessage` (`selectedDisplayText` o `selectedButtonId`) y
+`interactiveResponseMessage` (un `paramsJson`, otra cadena JSON). Y también `interactiveMessage` y
+`buttonsMessage`, que son las salientes.
+
+### Cómo se comprobó, en el destino
+
+```bash
+# 1. enviar de verdad
+curl -X POST "http://localhost:8080/message/sendButtons/Proyeccion%20Digital" \
+  -H "apikey: $AK" -H 'Content-Type: application/json' \
+  -d '{"number":"…","title":"Respuesta rápida","description":"Elige una de las opciones:",
+       "buttons":[{"type":"reply","displayText":"✅ Confirmar","id":"opt_confirm"}]}'
+
+# 2. mirar la BANDEJA, no el código de salida
+docker exec chatwoot-postgres-1 psql -U chatwoot -d chatwoot_production -tAc \
+  "select i.name, m.message_type, left(m.content,90) from messages m
+     join inboxes i on i.id=m.inbox_id
+    where m.created_at > now() - interval '3 minutes' order by m.id desc limit 3"
+
+# 3. y que el aviso ya no aparece
+docker logs evolution-api --since 2m 2>&1 | grep -i -E "not mapped|no body message found"
+```
+
+🔴 **El envío devolvía `201` con su `wamid` ANTES y DESPUÉS del arreglo.** El código de salida no
+distinguía nada: lo único que lo distingue es **la fila en la base de Chatwoot**.
+
+### 4. 🔴 Sale por la Cloud API y se ve en la bandeja del QR
+
+La plantilla se mandó por la instancia **PD Cloud** y apareció en la bandeja **«WS 1 - QR»**. Es la
+**coexistencia**: el mensaje lo manda la Cloud API y **quien lo vuelve a ver y lo reporta a Chatwoot
+es la instancia de Baileys**, que es la enganchada a esa otra bandeja. Hay que contarlo así al
+equipo, o buscarán la plantilla donde no está.
+
+**El relato completo está en la carpeta de la agencia:**
+`Documentacion/INCIDENCIA - Los mensajes fuera de la ventana de 24 h no salen y Evolution los da por enviados (8 sep 2026).md`
