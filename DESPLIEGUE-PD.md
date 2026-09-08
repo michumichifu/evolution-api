@@ -38,6 +38,12 @@ ssh root@89.117.73.129 'docker restart evolution-api'
 
 🔴 **Node lee `main.js` al arrancar**: copiar el `dist` no hace nada hasta reiniciar el contenedor.
 
+🆕 **El Manager, en cambio, NO pide reinicio** —son archivos estáticos que el backend sirve del disco
+montado— y tiene **su propio procedimiento**, con la tabla de parches y sus trampas, en
+`/home/lu/Proyectos/evolution-manager-v2/DESPLIEGUE-PD.md`. Ahí se despliega con
+`npm run build` + `rsync -a --delete dist/ …:/opt/evolution-api/manager-dist/`, y **la comprobación es
+qué bundle sirve producción**, no que el `rsync` termine bien.
+
 **Antes de desplegar, se compara con lo que corre.** Debe salir el **mismo número de archivos** y el
 `main.js` debe diferir **solo en los parches**:
 
