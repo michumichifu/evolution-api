@@ -1992,6 +1992,7 @@ export class ChatwootService {
     if (!nodo) return undefined;
 
     const partes: string[] = [];
+    const botones: string[] = [];
 
     const titulo = nodo.header?.title ?? nodo.header?.text;
     if (titulo) partes.push(`*${titulo}*`);
@@ -2006,10 +2007,35 @@ export class ChatwootService {
       } catch {
         // buttonParamsJson viene como cadena y puede no ser JSON válido: se deja el nombre.
       }
-      if (etiqueta) partes.push(`▶️ ${etiqueta}`);
+      // Se escribe en formato de WhatsApp (`*negrita*`): `aMarkdownDeChatwoot` lo traduce después.
+      // La línea de guiones es el separador que WhatsApp dibuja entre las opciones.
+      if (etiqueta) botones.push(`↩ *${etiqueta}*`);
     }
 
-    return partes.length ? partes.join('\n\n') : undefined;
+    const cuerpo = partes.join('\n\n');
+    const opciones = botones.length ? `\n\n---\n${botones.join('\n')}` : '';
+
+    return cuerpo || opciones ? `${cuerpo}${opciones}` : undefined;
+  }
+
+  /**
+   * PD: WhatsApp y Chatwoot escriben el formato distinto. WhatsApp usa `*negrita*`, `_cursiva_` y
+   * `~tachado~`; Chatwoot lo pinta con **markdown-it**, donde `*x*` es CURSIVA y la negrita es
+   * `**x**`. Sin esta traducción el título de un mensaje con botones salía en cursiva —o con los
+   * asteriscos a la vista—, en vez de la negrita que se ve en el teléfono.
+   *
+   * Estaba escrito a mano dentro del flujo normal; ahora es un método, porque el camino de los
+   * botones interactivos crea su propio mensaje y se lo saltaba.
+   */
+  private aMarkdownDeChatwoot(texto?: string): string | undefined {
+    if (!texto) return texto;
+
+    // `replace` con /g, no `replaceAll`: el `lib` de este proyecto es anterior a ES2021 y sobre un
+    // `string` tipado el compilador lo rechaza (en el flujo original colaba porque era `any`).
+    return texto
+      .replace(/\*((?!\s)([^\n*]+?)(?<!\s))\*/g, '**$1**')
+      .replace(/_((?!\s)([^\n_]+?)(?<!\s))_/g, '*$1*')
+      .replace(/~((?!\s)([^\n~]+?)(?<!\s))~/g, '~~$1~~');
   }
 
   /** PD: respuesta del usuario a un botón de flujo nativo (nativeFlowResponseMessage). */
@@ -2360,12 +2386,7 @@ export class ChatwootService {
         }
 
         const originalMessage = await this.getConversationMessage(body.message);
-        const bodyMessage = originalMessage
-          ? originalMessage
-              .replaceAll(/\*((?!\s)([^\n*]+?)(?<!\s))\*/g, '**$1**')
-              .replaceAll(/_((?!\s)([^\n_]+?)(?<!\s))_/g, '*$1*')
-              .replaceAll(/~((?!\s)([^\n~]+?)(?<!\s))~/g, '~~$1~~')
-          : originalMessage;
+        const bodyMessage = this.aMarkdownDeChatwoot(originalMessage);
 
         if (bodyMessage && bodyMessage.includes('/survey/responses/') && bodyMessage.includes('http')) {
           return;
@@ -2570,7 +2591,7 @@ export class ChatwootService {
           );
 
           if (!yaSeEscribioElPix) {
-            const contenido = this.textoDeInteractivo(body.message.interactiveMessage);
+            const contenido = this.aMarkdownDeChatwoot(this.textoDeInteractivo(body.message.interactiveMessage));
 
             if (contenido) {
               const send = await this.createMessage(
