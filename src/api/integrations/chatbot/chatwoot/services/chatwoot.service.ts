@@ -6,7 +6,7 @@ import { chatwootImport } from '@api/integrations/chatbot/chatwoot/utils/chatwoo
 import { PrismaRepository } from '@api/repository/repository.service';
 import { CacheService } from '@api/services/cache.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
-import { Events } from '@api/types/wa.types';
+import { Events, Integration } from '@api/types/wa.types';
 import { Chatwoot, ConfigService, Database, HttpServer } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import ChatwootClient, {
@@ -1638,6 +1638,18 @@ export class ChatwootService {
               );
             }
           } else {
+            // PD: si el agente eligió una PLANTILLA en el selector de Chatwoot, el webhook trae
+            // `additional_attributes.template_params`. Sin esto se enviaba el texto ya renderizado
+            // como mensaje normal: llegaba plano —sin encabezado, sin pie y sin botones— y, fuera de
+            // la ventana de 24 h, no llegaba en absoluto, porque Meta solo acepta plantillas ahí.
+            const plantilla = this.datosDePlantilla(body);
+
+            if (plantilla && waInstance?.integration === Integration.WHATSAPP_BUSINESS) {
+              const enviada = await this.enviarComoPlantilla(waInstance, chatId, plantilla, instance, body);
+              if (enviada) return;
+              // Si falla, sigue el camino de texto: dentro de la ventana al menos llega algo.
+            }
+
             const data: SendTextDto = {
               number: chatId,
               text: formatText,
@@ -2016,6 +2028,83 @@ export class ChatwootService {
     const opciones = botones.length ? `\n\n---\n${botones.join('\n')}` : '';
 
     return cuerpo || opciones ? `${cuerpo}${opciones}` : undefined;
+  }
+
+  /**
+   * PD: lee los `template_params` que Chatwoot mete en el mensaje cuando el agente usa el selector
+   * de plantillas. Devuelve `undefined` si no era una plantilla.
+   *
+   * Chatwoot manda: `{ name, category, language, content_mode, processed_params }`.
+   * `processed_params` son los valores que rellenó el agente, con la clave de cada variable:
+   * `{"1": "Carlos"}` si la plantilla usa parámetros posicionales, `{"nombre": "Carlos"}` si usa
+   * los que llevan nombre.
+   */
+  private datosDePlantilla(body: any): { name: string; language: string; params: Record<string, any> } | undefined {
+    const params = body?.additional_attributes?.template_params;
+
+    if (!params?.name) return undefined;
+
+    return {
+      name: params.name,
+      language: params.language || 'es',
+      params: params.processed_params || {},
+    };
+  }
+
+  /**
+   * PD: manda una plantilla de verdad por la Cloud API, en vez del texto renderizado. Devuelve
+   * `true` si salió, para que quien llama no envíe además el texto.
+   */
+  private async enviarComoPlantilla(
+    waInstance: any,
+    chatId: string,
+    plantilla: { name: string; language: string; params: Record<string, any> },
+    instance: InstanceDto,
+    body: any,
+  ): Promise<boolean> {
+    const valores = Object.entries(plantilla.params ?? {});
+
+    // Una clave numérica es un parámetro posicional; cualquier otra, uno con nombre.
+    const parameters = valores.map(([clave, valor]) =>
+      /^\d+$/.test(clave)
+        ? { type: 'text', text: String(valor) }
+        : { type: 'text', parameter_name: clave, text: String(valor) },
+    );
+
+    const components = parameters.length ? [{ type: 'body', parameters }] : [];
+
+    try {
+      const messageSent = await waInstance.templateMessage(
+        {
+          number: chatId,
+          name: plantilla.name,
+          language: plantilla.language,
+          components,
+        },
+        true,
+      );
+
+      if (!messageSent) throw new Error('Template not sent');
+
+      this.logger.info(`[PD] plantilla enviada por la Cloud API: ${plantilla.name}`);
+
+      await this.updateChatwootMessageId(
+        { ...messageSent },
+        {
+          messageId: body.id,
+          inboxId: body.inbox?.id,
+          conversationId: body.conversation?.id,
+          contactInboxSourceId: body.conversation?.contact_inbox?.source_id,
+        },
+        instance,
+      );
+
+      return true;
+    } catch (error) {
+      // No se traga el fallo: si la plantilla no sale, hay que verlo en el log.
+      this.logger.error(`[PD] no se pudo enviar la plantilla ${plantilla.name}: ${error?.message ?? error}`);
+      return false;
+    }
   }
 
   /**
