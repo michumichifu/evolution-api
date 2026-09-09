@@ -578,3 +578,31 @@ copiar/enlace con los de respuesta rápida (lo valida `buttonMessage()` y respon
 `isMediaMessage` **solo mira las claves de primer nivel** del mensaje: para él, un interactivo con
 logo no es un mensaje con medio. Se quedaba en el teléfono, igual que las fotos del catálogo. Ahora
 `enviarBotonesConLogo()` la baja y la sube como adjunto, y el fork la pinta arriba de la tarjeta.
+
+### 7.2 🔴 Lo que se probó con la tarjeta del PIX, y por qué se descartó (8 sep 2026)
+
+Luis quería **esa misma tarjeta** con el logo de Binance: *«¿cómo coño hace para colocar el ícono?
+Está escrito a código, ¿el ícono está estructurado en un SVG o es un PNG?»*. Se probó todo lo que
+quedaba, y esto es lo que se midió **enviando mensajes reales**, no leyendo documentación:
+
+| Se probó | Resultado |
+| :--- | :--- |
+| Cambiar el título y la clave (`name`, `key`) | 🟢 **Funciona.** Salió «Binance Pay» y el ID |
+| `key_type: "ID"` para que el prefijo dijera `ID:` | 🔴 **No.** WhatsApp **traduce** el valor y, ante uno que no conoce, cae a **«Teléfono»**. Los únicos rótulos son EVP, Teléfono, E-mail, CPF y CNPJ |
+| Mandar el pago **con encabezado de imagen** (nunca se había podido: el bloque salía antes) | 🟢 **Funciona.** El logo aparece **encima** de la tarjeta |
+| Acompañarlo de un `cta_copy` propio, para tener un botón que diga lo que uno quiera | 🟢 Evolution ya lo permite (su prohibición era suya, no de WhatsApp) |
+| Cambiar el **icono** o el rótulo **«Copiar clave Pix»** | 🔴 **Imposible.** No son campos: `NativeFlowButton` solo tiene `name` y `buttonParamsJson`, **las dos cadenas de texto**. El icono está en la app |
+
+**Decisión de Luis:** *«esa plantilla de PIX no nos va a servir, mejor olvidarla, dejarla ahí de
+ejemplo para saber que existe»*. Los cobros se hacen con **imagen + texto + botón de copiar**, que da
+control total del texto a cambio de no tener icono dentro de la línea.
+
+🔴 **Y de aquí salió un fallo de upstream:** `buttonMessage()` escribía `` `*${data.title}*` `` **sin
+comprobar que hubiera título**, así que un mensaje sin `title` llegaba al teléfono con la palabra
+**undefined** en negrita. Un mensaje sin título es legítimo —cuando el texto ya empieza por su propia
+línea en negrita, un título encima sobra—. Corregido: si no hay ni título ni descripción, no se manda
+`body`.
+
+🔴 **Para descubrir si WhatsApp reconoce otros tipos de pago** (y con qué icono los dibuja) **no hay
+lista**: los conoce el cliente, no el protocolo. Por eso un botón acepta ahora `paramsJson`, que se
+manda **tal cual** como `buttonParamsJson`: es la forma de probar valores y ver qué pinta el teléfono.

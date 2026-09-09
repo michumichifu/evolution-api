@@ -430,7 +430,13 @@ export const buttonsMessageSchema: JSONSchema7 = {
           phoneNumber: { type: 'string' },
           currency: { type: 'string' },
           name: { type: 'string' },
-          keyType: { type: 'string', enum: ['phone', 'email', 'cpf', 'cnpj', 'random'] },
+          // PD: sin enum. Los cinco de Brasil se traducen a lo que espera WhatsApp (`PHONE`, `EVP`…)
+          // y cualquier otro valor se manda tal cual, porque **WhatsApp lo pinta como prefijo de la
+          // línea de la tarjeta**: con `"ID"` sale `ID: 123456789` en vez de `EVP: 123456789`, que
+          // no lo entiende nadie fuera de Brasil. El enum lo impedía y devolvía 400.
+          keyType: { type: 'string', minLength: 1, maxLength: 30 },
+          // PD: el `buttonParamsJson` en crudo, para probar tipos de pago que Evolution no conoce.
+          paramsJson: { type: 'string', minLength: 2, maxLength: 4000 },
           key: { type: 'string' },
         },
         required: ['type'],

@@ -3742,6 +3742,10 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   private toJSONString(button: Button): string {
+    // PD: si viene el JSON crudo, se manda tal cual. Sirve para descubrir qué tipos de pago
+    // reconoce WhatsApp probándolos: no hay lista, los conoce el cliente.
+    if (button.paramsJson) return button.paramsJson;
+
     const toString = (obj: any) => JSON.stringify(obj);
 
     const json = {
@@ -3769,7 +3773,11 @@ export class BaileysStartupService extends ChannelStartupService {
               pix_static_code: {
                 merchant_name: button.name,
                 key: button.key,
-                key_type: this.mapKeyType.get(button.keyType),
+                // PD: si el tipo no es uno de los cinco de Brasil, se manda TAL CUAL. WhatsApp
+                // pinta este valor como prefijo de la línea (`EVP: 123…`), así que es la única
+                // palanca que hay para que ponga algo legible —`ID:`— en vez de la jerga del PIX.
+                // 🔴 El icono y el texto del botón NO son campos: los dibuja el cliente.
+                key_type: this.mapKeyType.get(button.keyType) ?? button.keyType,
               },
             },
           ],
@@ -3821,22 +3829,47 @@ export class BaileysStartupService extends ChannelStartupService {
 
     // PIX
     if (hasPixButton) {
-      if (data.buttons.length > 1) {
+      const pagos = data.buttons.filter((btn) => btn.type === 'pix');
+
+      if (pagos.length > 1) {
         throw new BadRequestException('Only one PIX button is allowed');
       }
-      if (hasReplyButtons || hasCTAButtons) {
-        throw new BadRequestException('PIX button cannot be mixed with other button types');
+      if (hasReplyButtons) {
+        throw new BadRequestException('PIX button cannot be mixed with reply buttons');
       }
+      // 🔴 PD: upstream tampoco dejaba mezclarlo con los CTA, y esa prohibición era SUYA, no de
+      // WhatsApp. Se abre para poder acompañar la tarjeta de pago de un botón propio: el rótulo del
+      // botón del pago («Copiar clave Pix») lo escribe el cliente y no hay campo para cambiarlo, así
+      // que un `cta_copy` al lado es la única forma de tener uno que diga lo que uno quiera.
+      if (data.buttons.filter((btn) => btn.type === 'url' || btn.type === 'call' || btn.type === 'copy').length > 2) {
+        throw new BadRequestException('Maximum of 2 CTA buttons allowed');
+      }
+
+      // PD: upstream salía de aquí SIN pasar por la sección del encabezado, así que un pago nunca
+      // podía llevar imagen. El icono de la tarjeta no es configurable —el protocolo de un botón
+      // nativo solo tiene `name` y `buttonParamsJson`, las dos cadenas de texto—, así que esto es
+      // lo único que queda por probar: mandarle al pago una cabecera con el logo y ver qué hace
+      // WhatsApp con ella.
+      const logoDelPago = data?.thumbnailUrl
+        ? await this.prepareMediaMessage({ mediatype: 'image', media: data.thumbnailUrl })
+        : null;
 
       const message: proto.IMessage = {
         interactiveMessage: {
+          ...(logoDelPago?.message?.imageMessage
+            ? {
+                header: {
+                  hasMediaAttachment: true,
+                  imageMessage: logoDelPago.message.imageMessage,
+                },
+              }
+            : {}),
           nativeFlowMessage: {
-            buttons: [
-              {
-                name: this.mapType.get('pix'),
-                buttonParamsJson: this.toJSONString(data.buttons[0]),
-              },
-            ],
+            // El pago primero y detrás los botones propios, si los hay.
+            buttons: data.buttons.map((btn) => ({
+              name: this.mapType.get(btn.type),
+              buttonParamsJson: this.toJSONString(btn),
+            })),
             messageParamsJson: JSON.stringify({
               from: 'api',
               templateId: v4(),
@@ -3893,15 +3926,15 @@ export class BaileysStartupService extends ChannelStartupService {
 
     const message: proto.IMessage = {
       interactiveMessage: {
-        body: {
-          text: (() => {
-            let text = `*${data.title}*`;
-            if (data?.description) {
-              text += `\n\n${data.description}`;
-            }
-            return text;
-          })(),
-        },
+        // 🔴 PD: upstream escribía `*${data.title}*` SIN comprobar que hubiera título, así que un
+        // mensaje sin `title` llegaba al teléfono con la palabra **undefined** en negrita arriba.
+        // Un mensaje sin título es legítimo: cuando el texto ya empieza por su propia línea en
+        // negrita («Método de pago: *Binance Pay*»), un título encima sobra.
+        body: (() => {
+          const partes = [data?.title ? `*${data.title}*` : null, data?.description || null].filter(Boolean);
+
+          return partes.length ? { text: partes.join('\n\n') } : undefined;
+        })(),
         footer: data?.footer ? { text: data.footer } : undefined,
         header: generatedMedia?.message?.imageMessage
           ? {

@@ -103,10 +103,19 @@ export class SendAudioDto extends Metadata {
 
 export type TypeButton = 'reply' | 'copy' | 'url' | 'call' | 'pix';
 
-export type KeyType = 'phone' | 'email' | 'cpf' | 'cnpj' | 'random';
+// PD: los cinco de Brasil se traducen a lo que espera WhatsApp (`PHONE`, `EVP`…); cualquier otro
+// valor se manda tal cual, porque WhatsApp lo pinta como prefijo de la línea de la tarjeta.
+export type KeyType = 'phone' | 'email' | 'cpf' | 'cnpj' | 'random' | (string & {});
 
 export class Button {
   type: TypeButton;
+  /**
+   * PD: el `buttonParamsJson` tal cual, sin que lo arme Evolution. Es la única forma de PROBAR qué
+   * tipos de pago reconoce WhatsApp —y con qué icono los dibuja—, porque esos tipos los conoce el
+   * cliente, no el protocolo: el botón solo transporta un `name` y esta cadena.
+   * 🔴 Solo para experimentar. Si viene, manda sobre todos los demás campos del botón.
+   */
+  paramsJson?: string;
   displayText?: string;
   id?: string;
   url?: string;
