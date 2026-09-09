@@ -307,6 +307,7 @@ export class ChatwootService {
     avatar_url?: string,
     jid?: string,
     lidJid?: string,
+    usuarioWa?: string,
   ) {
     try {
       const client = await this.clientCw(instance);
@@ -376,7 +377,9 @@ export class ChatwootService {
         const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
         if (lidDelContacto) {
           data['custom_attributes'] = {
-            whatsapp_usuario: name || null,
+            // PARCHE PD (9 sep 2026): el `@usuario` REAL que manda WhatsApp; el nombre del
+            // perfil solo como respaldo cuando esa persona no tiene usuario puesto.
+            whatsapp_usuario: usuarioWa || name || null,
             whatsapp_lid: lidDelContacto,
           };
         }
@@ -759,6 +762,16 @@ export class ChatwootService {
     // se le trata por su identificador, nunca por `phone_number`.
     const soloTieneLid = !isGroup && typeof phoneNumber === 'string' && phoneNumber.includes('@lid');
 
+    // 🔴 PARCHE PD (9 sep 2026): EL NOMBRE DE USUARIO DE WHATSAPP (`@fulanito`).
+    // Llega en los atributos del mensaje y lo rescata el parche de Baileys
+    // (`patches/baileys+7.0.0-rc.9.patch`), porque la rc.9 lo tiraba al decodificar.
+    // Es lo ÚNICO que identifica a quien oculta su número: su `pushName` puede ser
+    // «🤐🤐🤐🤐🤐» y su `@lid` no sirve para buscarlo ni para escribirle.
+    // Petición de Luis: *«si tiene nombre de usuario quiero ver su nombre de usuario,
+    // no 3432423@lid; si tiene teléfono + usuario quiero ver ambos»*.
+    const usuarioWa: string | undefined =
+      (!body.key.fromMe ? body.key.remoteJidUsername : undefined) || body.key.participantUsername;
+
     // Usa phoneNumber como base para cache (não o LID)
     const cacheKey = `${instance.instanceName}:createConversation-${phoneNumber}`;
     const lockKey = `${instance.instanceName}:lock:createConversation-${phoneNumber}`;
@@ -934,8 +947,11 @@ export class ChatwootService {
             // lo tendrían los que entren de cero a partir de ahora. Ver el
             // porqué completo en `createContact`.
             const esLid = typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid');
+            // PARCHE PD (9 sep 2026): manda el `@usuario` de verdad si WhatsApp lo mandó;
+            // el `pushName` solo se usa como respaldo cuando no hay ninguno.
+            const usuarioAGuardar = usuarioWa || nameContact;
             const usuarioNeedsUpdate =
-              esLid && !!nameContact && contact.custom_attributes?.whatsapp_usuario !== nameContact;
+              esLid && !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
             this.logger.verbose(`Picture needs update: ${pictureNeedsUpdate}`);
             this.logger.verbose(`Name needs update: ${nameNeedsUpdate}`);
             if (pictureNeedsUpdate || nameNeedsUpdate || usuarioNeedsUpdate) {
@@ -946,7 +962,7 @@ export class ChatwootService {
                 ...(usuarioNeedsUpdate && {
                   custom_attributes: {
                     ...(contact.custom_attributes || {}),
-                    whatsapp_usuario: nameContact,
+                    whatsapp_usuario: usuarioAGuardar,
                     whatsapp_lid: body.key.remoteJid,
                   },
                 }),
@@ -954,15 +970,19 @@ export class ChatwootService {
             }
           }
         } else {
+          // PARCHE PD (9 sep 2026): si el perfil no dice nada útil —WhatsApp manda el
+          // propio identificador como `pushName`— se usa el `@usuario`, que sí identifica.
+          const nombreVisible = nameContact === chatId && usuarioWa ? usuarioWa : nameContact;
           contact = await this.createContact(
             instance,
             chatId,
             filterInbox.id,
             isGroup,
-            nameContact,
+            nombreVisible,
             picture_url.profilePictureUrl || null,
             phoneNumber,
             isLid && !isGroup ? remoteJid : undefined,
+            usuarioWa,
           );
         }
 
