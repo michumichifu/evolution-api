@@ -842,7 +842,10 @@ export class ChannelStartupService {
             -- DISTINCT ON de esta consulta. Va como campo propio: arriba se ensena el
             -- nombre de la cuenta y ABAJO, donde iria el telefono que esta persona no
             -- tiene, su nombre de usuario.
-            (SELECT m2."key"->>'remoteJidUsername'
+            -- WhatsApp lo manda de las dos formas, con arroba delante y sin ella. El nombre
+            -- de usuario de verdad es SIN arroba, asi que se normaliza y se ensena con una
+            -- sola: si no, la misma lista mezcla @yeral_castillo_24 con issa.cuello.
+            (SELECT '@' || ltrim(m2."key"->>'remoteJidUsername', '@')
                FROM "Message" m2
               WHERE m2."instanceId" = "Message"."instanceId"
                 AND m2."key"->>'remoteJid' = "Message"."key"->>'remoteJid'

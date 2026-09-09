@@ -772,7 +772,16 @@ export class ChatwootService {
     // ⚠️ `remoteJidUsername` es el usuario DEL OTRO —sale de `recipient_username` o de
     // `sender_username` según quién escriba—, así que vale igual en un mensaje entrante
     // que en uno saliente. Condicionarlo a `!fromMe` descartaba justo los que lo traen.
-    const usuarioWa: string | undefined = body.key.remoteJidUsername || body.key.participantUsername;
+    // ⚠️ WhatsApp lo manda de las DOS formas, medido el 9 sep 2026: unos llegan con arroba
+    // delante (@yeral_castillo_24, @angiemarie0319) y otros sin ella (issa.cuello,
+    // Capullo0121, ri_chiip). El nombre de usuario de verdad es SIN la arroba —igual que en
+    // Instagram, la arroba es solo el prefijo con que se escribe—, asi que se guarda
+    // limpio y se ensena con una sola arroba delante. Lo cazo Luis, que probo a abrir un
+    // wa.me con el valor tal cual y no le llevaba a ningun sitio.
+    const usuarioCrudo: string | undefined = body.key.remoteJidUsername || body.key.participantUsername;
+    const usuarioWa: string | undefined = usuarioCrudo
+      ? `@${String(usuarioCrudo).trim().replace(/^@+/, '')}`
+      : undefined;
 
     // Usa phoneNumber como base para cache (não o LID)
     const cacheKey = `${instance.instanceName}:createConversation-${phoneNumber}`;
