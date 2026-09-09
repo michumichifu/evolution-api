@@ -819,24 +819,36 @@ export class ChannelStartupService {
             -- literal de TypeScript y el build revienta con errores que no dicen eso.
             CASE
               WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
+              -- PARCHE PD (9 sep 2026): el pushName del ULTIMO mensaje suele venir vacio o
+              -- ser el nombre de la propia clinica (si ese mensaje es saliente), asi que se
+              -- busca el ultimo ENTRANTE que traiga un nombre de verdad. NULLIF porque aqui
+              -- lo vacio es cadena vacia, no NULL, y COALESCE no la salta.
               WHEN "Message"."key"->>'remoteJid' LIKE '%@lid' THEN COALESCE(
-                -- El usuario no viaja en TODOS los mensajes del chat, asi que se busca el
-                -- ultimo que lo traiga y no solo en el mas reciente, que es el que fija el
-                -- DISTINCT ON de esta consulta.
-                (SELECT m2."key"->>'remoteJidUsername'
-                   FROM "Message" m2
-                  WHERE m2."instanceId" = "Message"."instanceId"
-                    AND m2."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
-                    AND m2."key"->>'remoteJidUsername' IS NOT NULL
-                  ORDER BY m2."messageTimestamp" DESC
-                  LIMIT 1),
-                -- Y si no hay usuario, el nombre del perfil, pero solo si dice algo: cuando
-                -- WhatsApp no manda ninguno pone el propio identificador, que no identifica.
-                NULLIF("Contact"."pushName", split_part("Message"."key"->>'remoteJid', '@', 1)),
-                NULLIF("Message"."pushName", split_part("Message"."key"->>'remoteJid', '@', 1))
+                NULLIF("Contact"."pushName", ''),
+                (SELECT NULLIF(m3."pushName", '')
+                   FROM "Message" m3
+                  WHERE m3."instanceId" = "Message"."instanceId"
+                    AND m3."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
+                    AND m3."key"->>'fromMe' = 'false'
+                    AND NULLIF(m3."pushName", '') IS NOT NULL
+                    AND m3."pushName" <> split_part("Message"."key"->>'remoteJid', '@', 1)
+                  ORDER BY m3."messageTimestamp" DESC
+                  LIMIT 1)
               )
               ELSE COALESCE("Contact"."pushName", "Message"."pushName")
             END as "pushName",
+            -- El usuario no viaja en TODOS los mensajes del chat, asi que se busca el
+            -- ultimo que lo traiga y no solo en el mas reciente, que es el que fija el
+            -- DISTINCT ON de esta consulta. Va como campo propio: arriba se ensena el
+            -- nombre de la cuenta y ABAJO, donde iria el telefono que esta persona no
+            -- tiene, su nombre de usuario.
+            (SELECT m2."key"->>'remoteJidUsername'
+               FROM "Message" m2
+              WHERE m2."instanceId" = "Message"."instanceId"
+                AND m2."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
+                AND m2."key"->>'remoteJidUsername' IS NOT NULL
+              ORDER BY m2."messageTimestamp" DESC
+              LIMIT 1) as "usuarioWa",
             "Contact"."profilePicUrl",
             COALESCE(
               to_timestamp("Message"."messageTimestamp"::double precision),
@@ -908,6 +920,9 @@ export class ChannelStartupService {
           id: contact.contactId || null,
           remoteJid: contact.remoteJid,
           pushName: contact.pushName,
+          // PARCHE PD (9 sep 2026): el nombre de usuario de WhatsApp, para ensenarlo en la
+          // linea de abajo en vez del identificador, que no identifica a nadie.
+          usuarioWa: contact.usuarioWa || null,
           profilePicUrl: contact.profilePicUrl,
           updatedAt: contact.updatedAt,
           windowStart: contact.windowStart,
