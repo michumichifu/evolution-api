@@ -377,9 +377,10 @@ export class ChatwootService {
         const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
         if (lidDelContacto) {
           data['custom_attributes'] = {
-            // PARCHE PD (9 sep 2026): el `@usuario` REAL que manda WhatsApp; el nombre del
-            // perfil solo como respaldo cuando esa persona no tiene usuario puesto.
-            whatsapp_usuario: usuarioWa || name || null,
+            // 🔴 PARCHE PD (9 sep 2026): SOLO el `@usuario` REAL que manda WhatsApp. Si esa
+            // persona no tiene, el campo NO se escribe: el nombre del perfil no es un
+            // usuario —puede ser «Daniela Soto💕»— y ponerlo ahí miente y rompe el `wa.me`.
+            ...(usuarioWa ? { whatsapp_usuario: usuarioWa } : {}),
             whatsapp_lid: lidDelContacto,
           };
         }
@@ -922,7 +923,13 @@ export class ChatwootService {
           }
         }
 
-        const picture_url = await this.waMonitor.waInstances[instance.instanceName].profilePicture(chatId);
+        // 🔴 PARCHE PD (9 sep 2026): a un `@lid` hay que pedirle la foto con su JID ENTERO.
+        // `profilePicture()` pasa lo que reciba por `createJid()`, que a unos dígitos
+        // sueltos les pega `@s.whatsapp.net`: para `250216355729507` sale un destinatario
+        // que no existe, la petición falla y el contacto entra SIN FOTO en Chatwoot —
+        // mientras en Evolution se ve perfectamente, porque allí sí está guardada.
+        const jidParaLaFoto = soloTieneLid ? remoteJid : chatId;
+        const picture_url = await this.waMonitor.waInstances[instance.instanceName].profilePicture(jidParaLaFoto);
         this.logger.verbose(`Contact profile picture URL: ${JSON.stringify(picture_url)}`);
 
         this.logger.verbose(`Searching contact for: ${chatId}`);
@@ -958,9 +965,12 @@ export class ChatwootService {
             // lo tendrían los que entren de cero a partir de ahora. Ver el
             // porqué completo en `createContact`.
             const esLid = typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid');
-            // PARCHE PD (9 sep 2026): manda el `@usuario` de verdad si WhatsApp lo mandó;
-            // el `pushName` solo se usa como respaldo cuando no hay ninguno.
-            const usuarioAGuardar = usuarioWa || nameContact;
+            // 🔴 PARCHE PD (9 sep 2026): SOLO el `@usuario` de verdad. NADA de respaldos.
+            // Antes se usaba el `pushName` a falta de uno real, y el resultado fue una
+            // ficha diciendo «Usuario de WhatsApp: @Daniela Soto💕» —con espacios y un
+            // emoji— que no es ningún usuario y encima generaba un `wa.me` roto.
+            // Un campo vacío se entiende; uno con un sucedáneo, MIENTE.
+            const usuarioAGuardar = usuarioWa;
             const usuarioNeedsUpdate =
               esLid && !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
 
