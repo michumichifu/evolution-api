@@ -56,6 +56,7 @@ import {
   StatusMessage,
   TypeButton,
 } from '@api/dto/sendMessage.dto';
+import { USyncUsernameProtocol } from '@api/integrations/channel/whatsapp/usync-username';
 import { chatwootImport } from '@api/integrations/chatbot/chatwoot/utils/chatwoot-import-helper';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
 import { ProviderFiles } from '@api/provider/sessions';
@@ -130,6 +131,8 @@ import makeWASocket, {
   Product,
   proto,
   UserFacingSocketConfig,
+  USyncQuery,
+  USyncUser,
   WAMediaUpload,
   WAMessage,
   WAMessageKey,
@@ -2412,7 +2415,36 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  /**
+   * PARCHE PD (9 sep 2026): le pide a WhatsApp el NOMBRE DE USUARIO de un `@lid`.
+   * Devuelve `null` si el servidor no lo da, que es justo lo que hay que averiguar.
+   * El porque completo, en `usync-username.ts`.
+   */
+  public async buscarUsuarioDeLid(lid: string): Promise<{ usuario: string | null; crudo: any }> {
+    const consulta: any = new USyncQuery().withContext('interactive').withMode('query');
+    consulta.protocols.push(new USyncUsernameProtocol());
+
+    // 🔴 El nodo `user` lo arma Baileys como `jid: !user.phone ? user.id : undefined`
+    // (`Socket/socket.js`, `executeUSyncQuery`): si el identificador no va en `id`, sale
+    // un `<user>` SIN jid y WhatsApp contesta una lista VACIA. Eso no es «no lo soporta»,
+    // es una consulta mal formada — pasó al primer intento.
+    const usuario: any = new USyncUser().withId(lid).withLid(lid);
+    consulta.withUser(usuario);
+
+    const resultado: any = await this.client.executeUSyncQuery(consulta);
+    this.logger.log(`[PD-USERNAME] ${lid} -> ${JSON.stringify(resultado)}`);
+    const encontrado = resultado?.list?.find((u: any) => u?.username);
+    return { usuario: encontrado?.username ?? null, crudo: resultado };
+  }
+
   public async fetchProfile(instanceName: string, number?: string) {
+    // PARCHE PD: preguntando por un `@lid` se devuelve su nombre de usuario, que es lo
+    // unico que identifica a quien oculta su numero. Sin esto no hay forma de pedirlo.
+    if (typeof number === 'string' && number.includes('@lid')) {
+      const { usuario, crudo } = await this.buscarUsuarioDeLid(number);
+      return { wuid: number, usuario, respuestaCruda: crudo } as any;
+    }
+
     const jid = number ? createJid(number) : this.client?.user?.id;
 
     const onWhatsapp = (await this.whatsappNumber({ numbers: [jid] }))?.shift();
