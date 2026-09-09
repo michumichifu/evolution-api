@@ -963,11 +963,25 @@ export class ChatwootService {
             const usuarioAGuardar = usuarioWa || nameContact;
             const usuarioNeedsUpdate =
               esLid && !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
+
+            // 🔴 PARCHE PD (9 sep 2026): LAS FICHAS VIEJAS SE ARREGLAN SOLAS AL PRIMER
+            // MENSAJE. Hasta hoy, Baileys tiraba el nombre de usuario al decodificar, así
+            // que **230 chats quedaron llamándose con su identificador** («106498042659013»,
+            // que no es ni un teléfono ni un nombre). Sin esto se quedarían así para
+            // siempre: `nameContact` sale del `pushName`, y en estos casos el `pushName`
+            // ES el propio identificador, o sea que la ficha se «actualizaba» con lo mismo.
+            // Ahora, cuando el nombre que llega no sirve, entra el `@usuario`.
+            // Luis: «¿las que tengan antigüedad se corrigen? No quiero luego seguir viendo
+            // esos errores».
+            const nombreInservible = !nameContact || nameContact === chatId;
+            const nombreAPoner = nombreInservible && usuarioWa ? usuarioWa : nameContact;
+            const hayNombreMejor = !!nombreAPoner && nombreAPoner !== contact.name;
+
             this.logger.verbose(`Picture needs update: ${pictureNeedsUpdate}`);
             this.logger.verbose(`Name needs update: ${nameNeedsUpdate}`);
-            if (pictureNeedsUpdate || nameNeedsUpdate || usuarioNeedsUpdate) {
+            if (pictureNeedsUpdate || (nameNeedsUpdate && hayNombreMejor) || usuarioNeedsUpdate) {
               contact = await this.updateContact(instance, contact.id, {
-                ...(nameNeedsUpdate && { name: nameContact }),
+                ...(nameNeedsUpdate && hayNombreMejor && { name: nombreAPoner }),
                 ...(waProfilePictureFile === '' && { avatar: null }),
                 ...(pictureNeedsUpdate && { avatar_url: picture_url?.profilePictureUrl }),
                 ...(usuarioNeedsUpdate && {
