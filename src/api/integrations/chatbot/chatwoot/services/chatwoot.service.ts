@@ -306,6 +306,7 @@ export class ChatwootService {
     name?: string,
     avatar_url?: string,
     jid?: string,
+    lidJid?: string,
   ) {
     try {
       const client = await this.clientCw(instance);
@@ -348,10 +349,21 @@ export class ChatwootService {
         // **el usuario, que es por donde SÍ se le puede escribir**, y el `@lid`
         // para que quien mire la ficha entienda por qué ese número es raro.
         // Chatwoot los enseña en la ficha del contacto y en la conversación.
-        if (jid && jid.includes('@lid')) {
+        //
+        // 🔴 AMPLIACIÓN PD (9 sep 2026): también cuando SÍ trae teléfono.
+        // Hay quien tiene los dos visibles, teléfono y usuario. Ahí manda el
+        // teléfono —y así se queda, es el bueno—, pero el usuario se guarda
+        // igual, porque también hace falta verlo. Petición de Luis: *«hay
+        // algunos que tienen los dos activos, visibles, teléfono y usuario, ahí
+        // se interpone el teléfono, pero también deberíamos poder ver en caso
+        // del usuario»*. Antes, con teléfono resuelto, `jid` no acababa en
+        // `@lid` y el usuario se perdía al CREAR la ficha; solo lo rellenaba
+        // después el camino de actualización.
+        const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
+        if (lidDelContacto) {
           data['custom_attributes'] = {
             whatsapp_usuario: name || null,
-            whatsapp_lid: jid,
+            whatsapp_lid: lidDelContacto,
           };
         }
       } else {
@@ -708,6 +720,25 @@ export class ChatwootService {
         this.saveLidMapping(remoteJid, body.key.remoteJidAlt);
         this.logger.verbose(`Using remoteJidAlt for LID: ${remoteJid} → ${phoneNumber}`);
       }
+
+      // 🔴 PARCHE PD (9 sep 2026): SI EL LID NO SE RESUELVE, EL MENSAJE SE PERDÍA ENTERO.
+      //
+      // `phoneNumber` nace como `body.key.remoteJidAlt`, y cuando WhatsApp no manda el
+      // número alternativo eso vale `undefined`. Si además el LID no se resuelve —porque ese
+      // contacto todavía no existe en Chatwoot— seguía `undefined` hasta el
+      // `phoneNumber.split('@')[0]` de más abajo, que reventaba con «Cannot read properties
+      // of undefined (reading 'split')». El `catch` lo dejaba en un `warn` y la conversación
+      // no llegaba a crearse: **el mensaje no entraba en Chatwoot y nada fallaba a la vista**.
+      // Medido el 9 sep 2026: 1.012 mensajes de Zenithe y Dental Shine entre el 3 y el 9 de
+      // septiembre, CERO en Chatwoot, con 166 de estos errores en solo 7 horas de log.
+      //
+      // Se cae al propio `@lid`, que es lo que se hacía antes de tratarlos: el contacto entra
+      // con un teléfono inservible —que `createContact` acompaña de `whatsapp_usuario` y
+      // `whatsapp_lid`, que es por donde SÍ se le puede escribir— pero **el mensaje llega**.
+      if (!phoneNumber) {
+        phoneNumber = remoteJid;
+        this.logger.warn(`LID without alternative number, falling back to the LID itself: ${remoteJid}`);
+      }
     }
 
     // Usa phoneNumber como base para cache (não o LID)
@@ -892,6 +923,7 @@ export class ChatwootService {
             nameContact,
             picture_url.profilePictureUrl || null,
             phoneNumber,
+            isLid && !isGroup ? remoteJid : undefined,
           );
         }
 
