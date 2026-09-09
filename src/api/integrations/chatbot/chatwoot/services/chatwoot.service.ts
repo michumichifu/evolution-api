@@ -769,8 +769,10 @@ export class ChatwootService {
     // «🤐🤐🤐🤐🤐» y su `@lid` no sirve para buscarlo ni para escribirle.
     // Petición de Luis: *«si tiene nombre de usuario quiero ver su nombre de usuario,
     // no 3432423@lid; si tiene teléfono + usuario quiero ver ambos»*.
-    const usuarioWa: string | undefined =
-      (!body.key.fromMe ? body.key.remoteJidUsername : undefined) || body.key.participantUsername;
+    // ⚠️ `remoteJidUsername` es el usuario DEL OTRO —sale de `recipient_username` o de
+    // `sender_username` según quién escriba—, así que vale igual en un mensaje entrante
+    // que en uno saliente. Condicionarlo a `!fromMe` descartaba justo los que lo traen.
+    const usuarioWa: string | undefined = body.key.remoteJidUsername || body.key.participantUsername;
 
     // Usa phoneNumber como base para cache (não o LID)
     const cacheKey = `${instance.instanceName}:createConversation-${phoneNumber}`;

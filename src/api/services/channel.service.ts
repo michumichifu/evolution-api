@@ -809,8 +809,32 @@ export class ChannelStartupService {
           SELECT DISTINCT ON ("Message"."key"->>'remoteJid')
             "Contact"."id" as "contactId",
             "Message"."key"->>'remoteJid' as "remoteJid",
+            -- PARCHE PD (9 sep 2026): a quien oculta su numero se le ensena su NOMBRE DE
+            -- USUARIO de WhatsApp (arroba fulanito), que es lo unico que lo identifica: su
+            -- pushName puede ser de puros emojis y su identificador @lid no dice nada. El
+            -- dato viaja dentro de la key del mensaje gracias al parche de Baileys
+            -- (patches/baileys+7.0.0-rc.9.patch), asi que no hace falta ninguna columna
+            -- nueva. Para el resto de los chats no cambia nada.
+            -- OJO: nada de acentos graves en estos comentarios, que cierran el template
+            -- literal de TypeScript y el build revienta con errores que no dicen eso.
             CASE
               WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
+              WHEN "Message"."key"->>'remoteJid' LIKE '%@lid' THEN COALESCE(
+                -- El usuario no viaja en TODOS los mensajes del chat, asi que se busca el
+                -- ultimo que lo traiga y no solo en el mas reciente, que es el que fija el
+                -- DISTINCT ON de esta consulta.
+                (SELECT m2."key"->>'remoteJidUsername'
+                   FROM "Message" m2
+                  WHERE m2."instanceId" = "Message"."instanceId"
+                    AND m2."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
+                    AND m2."key"->>'remoteJidUsername' IS NOT NULL
+                  ORDER BY m2."messageTimestamp" DESC
+                  LIMIT 1),
+                -- Y si no hay usuario, el nombre del perfil, pero solo si dice algo: cuando
+                -- WhatsApp no manda ninguno pone el propio identificador, que no identifica.
+                NULLIF("Contact"."pushName", split_part("Message"."key"->>'remoteJid', '@', 1)),
+                NULLIF("Message"."pushName", split_part("Message"."key"->>'remoteJid', '@', 1))
+              )
               ELSE COALESCE("Contact"."pushName", "Message"."pushName")
             END as "pushName",
             "Contact"."profilePicUrl",
