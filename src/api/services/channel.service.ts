@@ -818,7 +818,15 @@ export class ChannelStartupService {
               to_timestamp("Message"."messageTimestamp"::double precision),
               "Contact"."updatedAt"
             ) as "updatedAt",
-            "Chat"."name" as "pushName",
+            -- PARCHE PD (9 sep 2026): ESTE ALIAS ERA "pushName" Y PISABA AL DE ARRIBA.
+            -- Dos columnas con el mismo nombre en el SELECT: al serializar, la segunda
+            -- machaca a la primera, y Chat.name esta vacio en casi todos los chats. Por
+            -- eso el Manager pintaba EL NUMERO EN VEZ DEL NOMBRE EN TODAS las
+            -- conversaciones (cae a formatJid del remoteJid cuando no hay pushName), y se
+            -- notaba sobre todo en los @lid, donde el numero no significa nada.
+            -- En la rama MySQL de esta misma funcion el alias ya es chatName: el fallo
+            -- solo estaba en la de PostgreSQL, que es la que corre aqui.
+            "Chat"."name" as "chatName",
             "Chat"."createdAt" as "windowStart",
             "Chat"."createdAt" + INTERVAL '24 hours' as "windowExpires",
             "Chat"."unreadMessages" as "unreadMessages",
