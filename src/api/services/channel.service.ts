@@ -819,11 +819,15 @@ export class ChannelStartupService {
             -- literal de TypeScript y el build revienta con errores que no dicen eso.
             CASE
               WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
-              -- PARCHE PD (9 sep 2026): el pushName del ULTIMO mensaje suele venir vacio o
-              -- ser el nombre de la propia clinica (si ese mensaje es saliente), asi que se
-              -- busca el ultimo ENTRANTE que traiga un nombre de verdad. NULLIF porque aqui
-              -- lo vacio es cadena vacia, no NULL, y COALESCE no la salta.
-              WHEN "Message"."key"->>'remoteJid' LIKE '%@lid' THEN COALESCE(
+              -- 🔴 PARCHE PD (9 sep 2026): EL NOMBRE SALE DEL ULTIMO MENSAJE **ENTRANTE**.
+              -- El pushName del mensaje mas reciente suele venir vacio y, cuando ese mensaje
+              -- lo mando la clinica, ES EL NOMBRE DE LA CLINICA: media lista salia llamandose
+              -- «Dental shine». Lo vio Luis: «arriba, donde deberia estar el nombre del
+              -- contacto, sale dental shine, no tiene sentido». No se notaba antes porque el
+              -- alias duplicado dejaba el nombre SIEMPRE nulo (ver b462f6c9): al arreglar
+              -- aquello, este otro quedo a la vista.
+              -- NULLIF porque aqui lo vacio es cadena vacia, no NULL, y COALESCE no la salta.
+              ELSE COALESCE(
                 NULLIF("Contact"."pushName", ''),
                 (SELECT NULLIF(m3."pushName", '')
                    FROM "Message" m3
@@ -835,7 +839,6 @@ export class ChannelStartupService {
                   ORDER BY m3."messageTimestamp" DESC
                   LIMIT 1)
               )
-              ELSE COALESCE("Contact"."pushName", "Message"."pushName")
             END as "pushName",
             -- El usuario no viaja en TODOS los mensajes del chat, asi que se busca el
             -- ultimo que lo traiga y no solo en el mas reciente, que es el que fija el
