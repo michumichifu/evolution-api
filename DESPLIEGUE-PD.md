@@ -606,3 +606,21 @@ línea en negrita, un título encima sobra—. Corregido: si no hay ni título n
 🔴 **Para descubrir si WhatsApp reconoce otros tipos de pago** (y con qué icono los dibuja) **no hay
 lista**: los conoce el cliente, no el protocolo. Por eso un botón acepta ahora `paramsJson`, que se
 manda **tal cual** como `buttonParamsJson`: es la forma de probar valores y ver qué pinta el teléfono.
+
+### 7.3 La vía oficial existe, pero no nos toca (8 sep 2026)
+
+Se investigó a fondo por qué la tarjeta del PIX existe y cómo se tendría una propia. Resultado:
+**los pagos nativos de WhatsApp están habilitados en India, Brasil, México e Indonesia**, y dentro de
+esos países **los operan proveedores de pago externos** —en India, Razorpay, PayU, BillDesk y
+Zaakpay— integrados con Meta a través del programa **Solution Partner**. En Brasil hay una
+**Payments API** propia con el mensaje `order_details`.
+
+🔴 **No aplica a la agencia** (decisión de Luis): *«no somos un método de pago oficial, somos una
+agencia de gestión de campañas publicitarias»*, y **RD y Venezuela no están** en esos cuatro países.
+
+**Lo adoptado es imagen + texto + botones de copiar**, que es lo que hay en las dos pestañas de cobro.
+❌ **Descartado dibujar la tarjeta entera como imagen.**
+
+**El relato completo, con fuentes y con lo que queda disponible (WhatsApp Flows), está en la carpeta
+de la agencia:** `Documentacion/INCIDENCIA - Los mensajes fuera de la ventana de 24 h no salen y
+Evolution los da por enviados (8 sep 2026).md`, apartado 16.
