@@ -325,7 +325,21 @@ export class ChatwootService {
           avatar_url: avatar_url,
         };
 
-        if ((jid && jid.includes('@')) || !jid) {
+        // 🔴 PARCHE PD (9 sep 2026): UN `@lid` NO LLEVA TELÉFONO, PORQUE NO LO TIENE.
+        //
+        // Hasta hoy se guardaba el identificador en el campo del teléfono con un `+`
+        // delante (`+105828497510423`), y eso **es un dato falso**: no es el número de
+        // nadie. Decisión de Luis, que corrige la del 5 sep: *«a mí lo que me interesa
+        // saber, principalmente, es que eso no es un número de teléfono, por tanto no
+        // debería indicar en el campo de número de teléfono que eso es, cuando no lo
+        // es, y quiero que me refleje el nombre de usuario»*.
+        //
+        // 🔴 Esto SOLO se sostiene con el cambio hermano de `createConversation`, que a
+        // estos contactos los busca por `identifier`: `findContact` mira únicamente
+        // `phone_number` (ver `getSearchableFields`), así que sin aquello ninguno se
+        // encontraría nunca y cada mensaje abriría un contacto y una conversación nuevos.
+        const soloTieneLid = !!jid && jid.includes('@lid');
+        if (!soloTieneLid && ((jid && jid.includes('@')) || !jid)) {
           data['phone_number'] = `+${phoneNumber}`;
         }
 
@@ -741,6 +755,10 @@ export class ChatwootService {
       }
     }
 
+    // Quien no tiene mas que su `@lid`: sin telefono por ningun lado. A partir de aqui
+    // se le trata por su identificador, nunca por `phone_number`.
+    const soloTieneLid = !isGroup && typeof phoneNumber === 'string' && phoneNumber.includes('@lid');
+
     // Usa phoneNumber como base para cache (não o LID)
     const cacheKey = `${instance.instanceName}:createConversation-${phoneNumber}`;
     const lockKey = `${instance.instanceName}:lock:createConversation-${phoneNumber}`;
@@ -750,7 +768,13 @@ export class ChatwootService {
 
     try {
       // Processa atualização de contatos já criados @lid
-      if (phoneNumber && remoteJid && !isGroup) {
+      //
+      // 🔴 PARCHE PD (9 sep 2026): `soloTieneLid` NO entra aquí. Este bloque busca el
+      // contacto por teléfono y, si lo halla, le reescribe `phone_number` con
+      // `+<identificador>`. Sin esta guarda, al primer mensaje de una persona ya
+      // migrada le devolvería el teléfono falso que se le acaba de quitar: **la
+      // migración se desharía sola, contacto a contacto, sin un solo error**.
+      if (phoneNumber && remoteJid && !isGroup && !soloTieneLid) {
         const contact = await this.findContact(instance, phoneNumber.split('@')[0]);
         if (contact && contact.identifier !== remoteJid) {
           this.logger.verbose(
@@ -878,7 +902,22 @@ export class ChatwootService {
         this.logger.verbose(`Contact profile picture URL: ${JSON.stringify(picture_url)}`);
 
         this.logger.verbose(`Searching contact for: ${chatId}`);
-        let contact = await this.findContact(instance, chatId);
+
+        // 🔴 PARCHE PD (9 sep 2026): a quien solo tiene `@lid` se le busca por su
+        // IDENTIFICADOR, no por teléfono. Desde hoy esos contactos se crean sin
+        // `phone_number` (ver `createContact`), y `findContact` busca únicamente por
+        // ese campo (`getSearchableFields` devuelve `['phone_number']`): sin esto no
+        // encontraría ninguno y cada mensaje abriría un contacto y una conversación
+        // nuevos, que es peor que el problema que se quería resolver.
+        let contact: any;
+        if (soloTieneLid) {
+          const porIdentificador = await this.findContactByIdentifier(instance, remoteJid);
+          // Devuelve el primer resultado de una búsqueda por TEXTO, así que hay que
+          // comprobar que es ese contacto y no otro que se le parezca.
+          contact = porIdentificador?.identifier === remoteJid ? porIdentificador : null;
+        } else {
+          contact = await this.findContact(instance, chatId);
+        }
 
         if (contact) {
           this.logger.verbose(`Found contact: ID:${contact.id} - Name:${contact.name}`);
