@@ -1329,7 +1329,11 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
-          messagesRaw.push(this.prepareMessage(m));
+          // PARCHE PD (10 sep 2026): también el historial, o una instancia recién vinculada
+          // estrena la lista con la misma persona partida en dos. Ver `resolverTelefonoDeLid`.
+          const messageRaw = this.prepareMessage(m) as any;
+          await this.resolverTelefonoDeLid(messageRaw.key);
+          messagesRaw.push(messageRaw);
         }
 
         this.historySyncMessageCount += messagesRaw.length;
@@ -1508,6 +1512,10 @@ export class BaileysStartupService extends ChannelStartupService {
 
           const messageRaw = this.prepareMessage(received) as any;
 
+          // PARCHE PD (10 sep 2026): si llega por su @lid y Baileys conoce su teléfono, se
+          // guarda y se manda a Chatwoot con el teléfono. Ver `resolverTelefonoDeLid`.
+          await this.resolverTelefonoDeLid(messageRaw.key);
+
           if (messageRaw.messageType === 'pollUpdateMessage') {
             const pollCreationKey = (messageRaw.message as any).pollUpdateMessage.pollCreationMessageKey;
             const pollMessage = (await this.getMessage(pollCreationKey, true)) as proto.IWebMessageInfo;
@@ -1663,7 +1671,9 @@ export class BaileysStartupService extends ChannelStartupService {
             const { pollUpdates, ...messageData } = messageRaw as any;
             const msg = await this.prismaRepository.message.create({ data: messageData });
 
-            const { remoteJid } = received.key;
+            // PARCHE PD (10 sep 2026): el de `messageRaw`, que ya puede ser el teléfono. Con el
+            // de `received` los no leídos se contaban en el chat del @lid, que ya no se guarda.
+            const { remoteJid } = messageRaw.key;
             const timestamp = msg.messageTimestamp;
             const fromMe = received.key.fromMe.toString();
             const messageKey = `${remoteJid}_${timestamp}_${fromMe}`;
@@ -2862,6 +2872,10 @@ export class BaileysStartupService extends ChannelStartupService {
       }
 
       const messageRaw = this.prepareMessage(messageSent) as any;
+
+      // PARCHE PD (10 sep 2026): lo que se le envía a un @lid con teléfono conocido se guarda en
+      // el mismo chat que lo que se recibe de él. Ver `resolverTelefonoDeLid`.
+      await this.resolverTelefonoDeLid(messageRaw.key);
 
       const isMedia =
         messageSent?.message?.imageMessage ||
@@ -5433,6 +5447,51 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     return messageRaw;
+  }
+
+  /**
+   * 🔴 PARCHE PD (10 sep 2026): UNA MISMA PERSONA NO PUEDE SER DOS CHATS.
+   *
+   * WhatsApp manda a veces un mensaje direccionado por el `@lid` de quien escribe y SIN el
+   * atributo `sender_pn`, así que Baileys deja `remoteJidAlt` vacío. Evolution lo guardaba con
+   * el `@lid` y la persona salía dos veces: una con su teléfono y otra con un «número» de 15
+   * cifras que no es un teléfono. Pasó en «Dentistica Enmanuel 1» el día que se vinculó:
+   * `127629516652546@lid` era el `18494589854` y `189511338307700@lid`, el `18299376509`.
+   *
+   * 🔴 El teléfono SÍ estaba: Baileys guarda su mapa en las claves de la sesión (en Redis,
+   * `lid-mapping-<lid>_reverse`) y aquí solo se consultaba para las llamadas. Medido ese día:
+   * 106 mensajes guardados como `@lid` en 24 h teniendo su par, y 216 de 601 chats resolubles.
+   *
+   * Y aunque llegara `remoteJidAlt`, el cambio al teléfono del final de `messages.upsert` iba
+   * DESPUÉS de mandarlo a Chatwoot y de guardarlo: solo lo veía el webhook. Por eso se hace aquí,
+   * justo tras `prepareMessage` (que copia la `key`: la de Baileys no se toca).
+   *
+   * Quien oculta de verdad su número no tiene par y sale igual que antes, con su `@lid` y su
+   * usuario. Se muta la `key` a propósito, como el cambio que ya existía más abajo.
+   */
+  private async resolverTelefonoDeLid(key: any): Promise<void> {
+    const lid = key?.remoteJid;
+    if (typeof lid !== 'string' || !lid.endsWith('@lid')) return;
+
+    const esTelefono = (jid: unknown): jid is string => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
+
+    let telefono = esTelefono(key.remoteJidAlt) ? key.remoteJidAlt : undefined;
+
+    if (!telefono) {
+      try {
+        const pn = await this.client?.signalRepository?.lidMapping?.getPNForLID(lid);
+        // Viene con el dispositivo (`18494589854:0@s.whatsapp.net`): se deja solo el usuario.
+        if (pn) telefono = jidNormalizedUser(pn);
+      } catch (error) {
+        this.logger.warn(`No se pudo consultar el telefono de ${lid} en el mapa de Baileys: ${error?.message}`);
+      }
+    }
+
+    if (!esTelefono(telefono)) return;
+
+    key.remoteJid = telefono;
+    key.remoteJidAlt = lid;
+    key.addressingMode = 'pn';
   }
 
   private async syncChatwootLostMessages() {
