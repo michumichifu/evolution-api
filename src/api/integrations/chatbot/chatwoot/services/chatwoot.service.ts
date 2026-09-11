@@ -374,10 +374,8 @@ export class ChatwootService {
         // del usuario»*. Antes, con teléfono resuelto, `jid` no acababa en
         // `@lid` y el usuario se perdía al CREAR la ficha; solo lo rellenaba
         // después el camino de actualización.
-        const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
         const attrs: Record<string, any> = {};
         if (usuarioWa) attrs.whatsapp_usuario = usuarioWa;
-        if (lidDelContacto) attrs.whatsapp_lid = lidDelContacto;
         if (Object.keys(attrs).length > 0) {
           data['custom_attributes'] = attrs;
         }
@@ -966,12 +964,6 @@ export class ChatwootService {
             // SIEMPRE que difiera del actual, tenga la persona teléfono visible, LID
             // resuelto o solo LID. La identidad técnica (LID) se guarda si viene en
             // remoteJidAlt o remoteJid sin pisar el teléfono.
-            const lidDeEsteMensaje =
-              typeof body.key?.remoteJidAlt === 'string' && body.key.remoteJidAlt.includes('@lid')
-                ? body.key.remoteJidAlt
-                : typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid')
-                  ? body.key.remoteJid
-                  : undefined;
             const usuarioAGuardar = usuarioWa;
             const usuarioNeedsUpdate =
               !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
@@ -1000,7 +992,6 @@ export class ChatwootService {
                   custom_attributes: {
                     ...(contact.custom_attributes || {}),
                     whatsapp_usuario: usuarioAGuardar,
-                    ...(lidDeEsteMensaje ? { whatsapp_lid: lidDeEsteMensaje } : {}),
                   },
                 }),
               });
