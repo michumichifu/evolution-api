@@ -319,10 +319,11 @@ export class ChatwootService {
 
       let data: any = {};
       if (!isGroup) {
+        const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
         data = {
           inbox_id: inboxId,
           name: name || phoneNumber,
-          identifier: jid,
+          identifier: lidDelContacto || jid,
           avatar_url: avatar_url,
         };
 
@@ -374,7 +375,6 @@ export class ChatwootService {
         // del usuario»*. Antes, con teléfono resuelto, `jid` no acababa en
         // `@lid` y el usuario se perdía al CREAR la ficha; solo lo rellenaba
         // después el camino de actualización.
-        const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
         const attrs: Record<string, any> = {};
         if (usuarioWa) attrs.whatsapp_usuario = usuarioWa;
         if (lidDelContacto) attrs.whatsapp_lid = lidDelContacto;
@@ -781,6 +781,13 @@ export class ChatwootService {
       ? `@${String(usuarioCrudo).trim().replace(/^@+/, '')}`
       : undefined;
 
+    const lidDeEsteMensaje =
+      typeof body.key?.remoteJidAlt === 'string' && body.key.remoteJidAlt.includes('@lid')
+        ? body.key.remoteJidAlt
+        : typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid')
+          ? body.key.remoteJid
+          : undefined;
+
     // Usa phoneNumber como base para cache (não o LID)
     const cacheKey = `${instance.instanceName}:createConversation-${phoneNumber}`;
     const lockKey = `${instance.instanceName}:lock:createConversation-${phoneNumber}`;
@@ -798,12 +805,13 @@ export class ChatwootService {
       // migración se desharía sola, contacto a contacto, sin un solo error**.
       if (phoneNumber && remoteJid && !isGroup && !soloTieneLid) {
         const contact = await this.findContact(instance, phoneNumber.split('@')[0]);
-        if (contact && contact.identifier !== remoteJid) {
+        const identificadorDeseado = lidDeEsteMensaje || phoneNumber;
+        if (contact && contact.identifier !== identificadorDeseado) {
           this.logger.verbose(
-            `Identifier needs update: (contact.identifier: ${contact.identifier}, phoneNumber: ${phoneNumber}, body.key.remoteJidAlt: ${remoteJid}`,
+            `Identifier needs update: (contact.identifier: ${contact.identifier}, wanted: ${identificadorDeseado})`,
           );
           const updateContact = await this.updateContact(instance, contact.id, {
-            identifier: phoneNumber,
+            identifier: identificadorDeseado,
             phone_number: `+${phoneNumber.split('@')[0]}`,
           });
 
@@ -966,12 +974,6 @@ export class ChatwootService {
             // SIEMPRE que difiera del actual, tenga la persona teléfono visible, LID
             // resuelto o solo LID. La identidad técnica (LID) se guarda si viene en
             // remoteJidAlt o remoteJid sin pisar el teléfono.
-            const lidDeEsteMensaje =
-              typeof body.key?.remoteJidAlt === 'string' && body.key.remoteJidAlt.includes('@lid')
-                ? body.key.remoteJidAlt
-                : typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid')
-                  ? body.key.remoteJid
-                  : undefined;
             const usuarioAGuardar = usuarioWa;
             const usuarioNeedsUpdate =
               !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
