@@ -375,14 +375,11 @@ export class ChatwootService {
         // `@lid` y el usuario se perdía al CREAR la ficha; solo lo rellenaba
         // después el camino de actualización.
         const lidDelContacto = lidJid && lidJid.includes('@lid') ? lidJid : jid && jid.includes('@lid') ? jid : null;
-        if (lidDelContacto) {
-          data['custom_attributes'] = {
-            // 🔴 PARCHE PD (9 sep 2026): SOLO el `@usuario` REAL que manda WhatsApp. Si esa
-            // persona no tiene, el campo NO se escribe: el nombre del perfil no es un
-            // usuario —puede ser «Daniela Soto💕»— y ponerlo ahí miente y rompe el `wa.me`.
-            ...(usuarioWa ? { whatsapp_usuario: usuarioWa } : {}),
-            whatsapp_lid: lidDelContacto,
-          };
+        const attrs: Record<string, any> = {};
+        if (usuarioWa) attrs.whatsapp_usuario = usuarioWa;
+        if (lidDelContacto) attrs.whatsapp_lid = lidDelContacto;
+        if (Object.keys(attrs).length > 0) {
+          data['custom_attributes'] = attrs;
         }
       } else {
         data = {
@@ -964,15 +961,20 @@ export class ChatwootService {
             // teléfono inservible y sin forma de saber a quién pertenecen: solo
             // lo tendrían los que entren de cero a partir de ahora. Ver el
             // porqué completo en `createContact`.
-            const esLid = typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid');
-            // 🔴 PARCHE PD (9 sep 2026): SOLO el `@usuario` de verdad. NADA de respaldos.
-            // Antes se usaba el `pushName` a falta de uno real, y el resultado fue una
-            // ficha diciendo «Usuario de WhatsApp: @Daniela Soto💕» —con espacios y un
-            // emoji— que no es ningún usuario y encima generaba un `wa.me` roto.
-            // Un campo vacío se entiende; uno con un sucedáneo, MIENTE.
+            // 🔴 PARCHE PD (9 sep 2026, rev 11 sep): SOLO el `@usuario` de verdad.
+            // Si WhatsApp manda un usuario real (`usuarioWa`), se guarda y actualiza
+            // SIEMPRE que difiera del actual, tenga la persona teléfono visible, LID
+            // resuelto o solo LID. La identidad técnica (LID) se guarda si viene en
+            // remoteJidAlt o remoteJid sin pisar el teléfono.
+            const lidDeEsteMensaje =
+              typeof body.key?.remoteJidAlt === 'string' && body.key.remoteJidAlt.includes('@lid')
+                ? body.key.remoteJidAlt
+                : typeof body.key?.remoteJid === 'string' && body.key.remoteJid.includes('@lid')
+                  ? body.key.remoteJid
+                  : undefined;
             const usuarioAGuardar = usuarioWa;
             const usuarioNeedsUpdate =
-              esLid && !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
+              !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
 
             // 🔴 PARCHE PD (9 sep 2026): LAS FICHAS VIEJAS SE ARREGLAN SOLAS AL PRIMER
             // MENSAJE. Hasta hoy, Baileys tiraba el nombre de usuario al decodificar, así
@@ -998,7 +1000,7 @@ export class ChatwootService {
                   custom_attributes: {
                     ...(contact.custom_attributes || {}),
                     whatsapp_usuario: usuarioAGuardar,
-                    whatsapp_lid: body.key.remoteJid,
+                    ...(lidDeEsteMensaje ? { whatsapp_lid: lidDeEsteMensaje } : {}),
                   },
                 }),
               });
