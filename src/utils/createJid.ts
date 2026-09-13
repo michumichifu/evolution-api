@@ -32,8 +32,22 @@ function formatBRNumber(jid: string) {
   }
 }
 
+// 🔴 PARCHE PD (13 sep 2026): EL BSUID DE LA CLOUD API NO ES UN TELÉFONO.
+// Meta ya no manda el teléfono de quien lo oculta: manda un *business-scoped user ID*, prefijo de
+// país ISO + punto + hasta 128 alfanuméricos (`DO.937659916066542`; el del padre, `US.ENT.…`).
+// `createJid` le quitaba el `DO.` y le pegaba `@s.whatsapp.net`, y en Chatwoot nacía una ficha con
+// `+937659916066542` en el campo del teléfono, que no es el número de nadie (Eva Díaz, 12 sep 2026).
+// Se guarda tal cual, que es como ya lo guarda Chatwoot en las fichas que llegan con BSUID.
+export function esBsuid(valor: string): boolean {
+  return /^[A-Z]{2}(\.ENT)?\.[A-Za-z0-9]{1,128}$/.test(String(valor || '').split('@')[0]);
+}
+
 export function createJid(number: string): string {
   number = number.replace(/:\d+/, '');
+
+  if (esBsuid(number)) {
+    return number.split('@')[0];
+  }
 
   if (
     number.includes('@g.us') ||

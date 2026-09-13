@@ -22,7 +22,7 @@ import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
-import { createJid } from '@utils/createJid';
+import { createJid, esBsuid } from '@utils/createJid';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -73,6 +73,13 @@ export class BusinessStartupService extends ChannelStartupService {
 
   private isMediaMessage(message: any) {
     return message.document || message.image || message.audio || message.video;
+  }
+
+  // 🔴 PARCHE PD (13 sep 2026): A QUIEN OCULTA SU NÚMERO SE LE ESCRIBE POR SU BSUID.
+  // Para responder a un *business-scoped user ID* (`DO.937659916066542`) Meta pide ponerlo en
+  // `recipient` y NO mandar `to`. Con `to` y los dígitos sueltos se escribía a un número que no existe.
+  private destinatarioMeta(number: string): { to?: string; recipient?: string } {
+    return esBsuid(number) ? { recipient: String(number).split('@')[0] } : { to: number.replace(/\D/g, '') };
   }
 
   private async post(message: any, params: string) {
@@ -401,10 +408,17 @@ export class BusinessStartupService extends ChannelStartupService {
       if (received.messages) {
         const message = received.messages[0];
 
+        // 🔴 PARCHE PD (13 sep 2026): EL USUARIO DE WHATSAPP, QUE LA CLOUD API SÍ MANDA EN LOS ENTRANTES.
+        // Viene en `contacts[0].profile.username` (documentación de Meta sobre BSUID) y Evolution lo
+        // descartaba. Se guarda en la `key` con el mismo nombre que usa el parche de Baileys, así que el
+        // chat del Manager y la ficha de Chatwoot lo recogen sin otro cambio. Por Baileys solo viaja en
+        // los salientes; por aquí llega con el primer mensaje de quien escribe.
+        const usuarioCloud: string | undefined = received.contacts?.[0]?.profile?.username;
         const key = {
           id: message.id,
           remoteJid: senderJid,
           fromMe: message.from === received.metadata.phone_number_id,
+          ...(usuarioCloud ? { remoteJidUsername: usuarioCloud } : {}),
         };
 
         if (message.type === 'sticker') {
@@ -969,7 +983,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: 'reaction',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             reaction: {
               message_id: message['reactionMessage']['key']['id'],
               emoji: message['reactionMessage']['text'],
@@ -983,7 +997,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: 'location',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             location: {
               longitude: message['locationMessage']['degreesLongitude'],
               latitude: message['locationMessage']['degreesLatitude'],
@@ -999,7 +1013,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: 'contacts',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             contacts: message['contacts'],
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
@@ -1011,7 +1025,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: 'text',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             text: {
               body: message['conversation'],
               preview_url: Boolean(options?.linkPreview),
@@ -1027,7 +1041,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: message['mediaType'],
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             [message['mediaType']]: {
               [message['type']]: message['id'],
               ...(message['mediaType'] !== 'audio' &&
@@ -1045,7 +1059,7 @@ export class BusinessStartupService extends ChannelStartupService {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
             type: 'audio',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             audio: {
               [message['type']]: message['id'],
             },
@@ -1057,7 +1071,7 @@ export class BusinessStartupService extends ChannelStartupService {
           content = {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             type: 'interactive',
             interactive: {
               type: 'button',
@@ -1081,7 +1095,7 @@ export class BusinessStartupService extends ChannelStartupService {
           content = {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             type: 'interactive',
             interactive: {
               type: 'list',
@@ -1116,7 +1130,7 @@ export class BusinessStartupService extends ChannelStartupService {
           content = {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: number.replace(/\D/g, ''),
+            ...this.destinatarioMeta(number),
             type: 'template',
             template: {
               name: message['template']['name'],

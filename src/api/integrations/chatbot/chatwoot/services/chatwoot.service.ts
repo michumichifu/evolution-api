@@ -20,6 +20,7 @@ import ChatwootClient, {
 } from '@figuro/chatwoot-sdk';
 import { request as chatwootRequest } from '@figuro/chatwoot-sdk/dist/core/request';
 import { Chatwoot as ChatwootModel, Contact as ContactModel, Message as MessageModel } from '@prisma/client';
+import { esBsuid } from '@utils/createJid';
 import i18next from '@utils/i18n';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -808,7 +809,10 @@ export class ChatwootService {
 
     // Quien no tiene mas que su `@lid`: sin telefono por ningun lado. A partir de aqui
     // se le trata por su identificador, nunca por `phone_number`.
-    const soloTieneLid = !isGroup && typeof phoneNumber === 'string' && phoneNumber.includes('@lid');
+    // 🔴 PARCHE PD (13 sep 2026): el BSUID de la Cloud API (`DO.937659916066542`) va por el mismo
+    // camino: tampoco es un teléfono, y la ficha se busca y se crea por su identificador.
+    const soloTieneLid =
+      !isGroup && typeof phoneNumber === 'string' && (phoneNumber.includes('@lid') || esBsuid(phoneNumber));
 
     // 🔴 PARCHE PD (9 sep 2026): EL NOMBRE DE USUARIO DE WHATSAPP (`@fulanito`).
     // Llega en los atributos del mensaje y lo rescata el parche de Baileys
