@@ -477,6 +477,7 @@ export class ChatwootService {
       } else {
         contact = await this.findContact(instance, phoneNumber.split('@')[0].split(':')[0]);
       }
+      if (!contact && lid) contact = await this.buscarPorAtributoWa(instance, 'whatsapp_lid', lid);
       // Sin ficha no hay nada que poner al día: la crea `createContact`, que ya guarda el usuario.
       if (!contact) return;
 
@@ -498,6 +499,45 @@ export class ChatwootService {
       await this.cache.set(claveCache, usuarioWa, 86400);
     } catch (error) {
       this.logger.warn(`sincronizarUsuarioWa(${remoteJid}): ${error}`);
+    }
+  }
+
+  // 🔴 PARCHE PD (13 sep 2026): BUSCAR A LA PERSONA POR LO QUE YA SE SABE DE ELLA.
+  // Evolution buscaba solo por teléfono o por `identifier`, y no miraba el `@lid` ni el
+  // `@usuario` que ya guardamos en la ficha (`whatsapp_lid`, `whatsapp_usuario`). Si WhatsApp
+  // mandaba a la misma persona con otra forma —el `@lid` en vez del teléfono—, no la reconocía y
+  // abría ficha y conversación nuevas. Así nacieron 121 conversaciones duplicadas el 9 y 10 sep
+  // (Elizabeth Garabitos, Dental Shine: la #61 y la #101). Luis: *«chatwoot debería tener esa
+  // inteligencia… identificar que se actualiza algo… para que así no se abra una segunda»*.
+  //
+  // Solo vale si hay UNA ficha que casa exactamente: con dos candidatas no se adivina.
+  // Sin `custom_attribute_type` a propósito: con él Chatwoot pasa el valor a minúsculas y
+  // `@Daniela_Soto15` no casaría. Comprobado contra producción con la ficha de Elizabeth.
+  private async buscarPorAtributoWa(
+    instance: InstanceDto,
+    clave: 'whatsapp_lid' | 'whatsapp_usuario',
+    valor?: string,
+  ): Promise<any> {
+    if (!valor) return null;
+    try {
+      const client = await this.clientCw(instance);
+      if (!client) return null;
+
+      const respuesta = (await client.contacts.filter({
+        accountId: this.provider.accountId,
+        payload: [{ attribute_key: clave, filter_operator: 'equal_to', values: [valor], query_operator: null }],
+      })) as any;
+      const lista: any[] = respuesta?.payload || respuesta?.data?.payload || [];
+      const exactas = lista.filter((ficha) => ficha?.custom_attributes?.[clave] === valor);
+
+      if (exactas.length > 1) {
+        this.logger.warn(`${clave}=${valor}: ${exactas.length} fichas casan, no se elige ninguna`);
+        return null;
+      }
+      return exactas[0] || null;
+    } catch (error) {
+      this.logger.warn(`buscarPorAtributoWa(${clave}=${valor}): ${error}`);
+      return null;
     }
   }
 
@@ -1013,6 +1053,27 @@ export class ChatwootService {
           contact = porIdentificador?.identifier === remoteJid ? porIdentificador : null;
         } else {
           contact = await this.findContact(instance, chatId);
+        }
+
+        // 🔴 PARCHE PD (13 sep 2026): ANTES DE ABRIR FICHA Y CONVERSACIÓN NUEVAS, SE BUSCA A LA
+        // PERSONA POR SU `@lid` Y POR SU `@usuario` GUARDADOS. Ver `buscarPorAtributoWa`.
+        if (!contact) {
+          const lidConocido = soloTieneLid ? (esBsuid(remoteJid) ? undefined : remoteJid) : lidDeEsteMensaje;
+          const porLoQueSeSabe =
+            (await this.buscarPorAtributoWa(instance, 'whatsapp_lid', lidConocido)) ||
+            (await this.buscarPorAtributoWa(instance, 'whatsapp_usuario', usuarioWa));
+
+          if (porLoQueSeSabe) {
+            contact = porLoQueSeSabe;
+            this.logger.verbose(`Contacto reconocido por su @lid o su @usuario: ID:${contact.id} (${remoteJid})`);
+
+            // Si ahora llega con teléfono y la ficha no lo tenía, se le pone. Si ese teléfono ya es
+            // de otra ficha, Chatwoot contesta 422 y se deja como estaba: un teléfono tiene un dueño.
+            if (!soloTieneLid && !contact.phone_number && chatId) {
+              const conTelefono: any = await this.updateContact(instance, contact.id, { phone_number: `+${chatId}` });
+              if (!conTelefono) this.logger.warn(`No se pudo poner +${chatId} en la ficha ${contact.id}`);
+            }
+          }
         }
 
         if (contact) {
