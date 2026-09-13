@@ -450,6 +450,56 @@ export class ChatwootService {
     }
   }
 
+  // 🔴 PARCHE PD (13 sep 2026): EL USUARIO DE WHATSAPP SE LLEVA A LA FICHA VENGA EN EL MENSAJE
+  // QUE VENGA, ENTRANTE O SALIENTE. WhatsApp solo lo manda en los mensajes que SALEN de la
+  // instancia (medido el 12 sep: 0 entrantes con usuario en toda la base), y la puesta al día de
+  // la ficha vivía dentro de `if (!body.key.fromMe)` y detrás del atajo de la caché de
+  // `createConversation`: el dato llegaba y se tiraba. Caso real, Eva Díaz (Proyección Digital,
+  // 12 sep 2026): seis mensajes escritos desde el teléfono trajeron `@evamariadm`, el chat de
+  // Evolution lo enseñaba y la ficha de Chatwoot se quedó sin él.
+  private async sincronizarUsuarioWa(
+    instance: InstanceDto,
+    remoteJid: string,
+    phoneNumber: string,
+    soloTieneLid: boolean,
+    usuarioWa: string,
+    lid?: string,
+  ) {
+    try {
+      const claveCache = `${instance.instanceName}:usuarioWa-${remoteJid}`;
+      if ((await this.cache.get(claveCache)) === usuarioWa) return;
+
+      let contact: any;
+      if (soloTieneLid) {
+        const porIdentificador = await this.findContactByIdentifier(instance, remoteJid);
+        contact = porIdentificador?.identifier === remoteJid ? porIdentificador : null;
+      } else {
+        contact = await this.findContact(instance, phoneNumber.split('@')[0].split(':')[0]);
+      }
+      // Sin ficha no hay nada que poner al día: la crea `createContact`, que ya guarda el usuario.
+      if (!contact) return;
+
+      if (contact.custom_attributes?.whatsapp_usuario !== usuarioWa) {
+        // `updateContact` devuelve `null` si falla, aunque su tipo diga `void`.
+        const actualizado: any = await this.updateContact(instance, contact.id, {
+          custom_attributes: {
+            ...(contact.custom_attributes || {}),
+            whatsapp_usuario: usuarioWa,
+            ...(lid ? { whatsapp_lid: lid } : {}),
+          },
+        });
+        if (!actualizado) {
+          this.logger.warn(`No se pudo guardar el usuario ${usuarioWa} en la ficha ${contact.id}`);
+          return;
+        }
+        this.logger.verbose(`Usuario de WhatsApp ${usuarioWa} guardado en la ficha ${contact.id}`);
+      }
+      await this.cache.set(claveCache, usuarioWa, 86400);
+    } catch (error) {
+      this.logger.warn(`sincronizarUsuarioWa(${remoteJid}): ${error}`);
+    }
+  }
+
   public async addLabelToContact(nameInbox: string, contactId: number) {
     try {
       const uri = this.configService.get<Chatwoot>('CHATWOOT').IMPORT.DATABASE.CONNECTION.URI;
@@ -826,6 +876,12 @@ export class ChatwootService {
           }
         }
       }
+      // 🔴 PARCHE PD (13 sep 2026): ANTES del atajo de la caché, que devuelve la conversación
+      // sin mirar la ficha, y sin mirar si el mensaje es entrante o saliente: el usuario solo
+      // viaja en los salientes. Ver `sincronizarUsuarioWa`.
+      if (!isGroup && phoneNumber && remoteJid && usuarioWa) {
+        await this.sincronizarUsuarioWa(instance, remoteJid, phoneNumber, soloTieneLid, usuarioWa, lidDeEsteMensaje);
+      }
       this.logger.verbose(`--- Start createConversation ---`);
       this.logger.verbose(`Instance: ${JSON.stringify(instance)}`);
 
@@ -977,8 +1033,7 @@ export class ChatwootService {
             const usuarioAGuardar = usuarioWa;
             const usuarioNeedsUpdate =
               !!usuarioAGuardar && contact.custom_attributes?.whatsapp_usuario !== usuarioAGuardar;
-            const lidNeedsUpdate =
-              !!lidDeEsteMensaje && contact.custom_attributes?.whatsapp_lid !== lidDeEsteMensaje;
+            const lidNeedsUpdate = !!lidDeEsteMensaje && contact.custom_attributes?.whatsapp_lid !== lidDeEsteMensaje;
 
             // 🔴 PARCHE PD (9 sep 2026): LAS FICHAS VIEJAS SE ARREGLAN SOLAS AL PRIMER
             // MENSAJE. Hasta hoy, Baileys tiraba el nombre de usuario al decodificar, así

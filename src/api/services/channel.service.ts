@@ -805,7 +805,38 @@ export class ChannelStartupService {
           : Prisma.sql``;
 
       results = await this.prismaRepository.$queryRaw`
-        WITH rankedMessages AS (
+        -- 🔴 PARCHE PD (13 sep 2026): EL ULTIMO NOMBRE Y EL ULTIMO USUARIO, EN UNA SOLA PASADA.
+        -- Antes eran dos subconsultas correlacionadas dentro de rankedMessages, y se evaluaban
+        -- por CADA MENSAJE de la instancia, no por cada chat: sin indice sobre el remoteJid,
+        -- cada una releia todos los mensajes. En Proyeccion Digital, 1.484 x 1.520 filas:
+        -- 2.361 ms de consulta y el chat del Manager diciendo «0 conversaciones» 4-5 segundos
+        -- (Luis, 13 sep 2026: «evolution demora en cargar, demora como cinco segundos»).
+        -- Con el GROUP BY, medido en produccion con los mismos resultados: 15 ms.
+        --
+        -- EL NOMBRE SALE DEL ULTIMO MENSAJE **ENTRANTE** (9 sep 2026): el pushName del mensaje
+        -- mas reciente suele venir vacio y, cuando ese mensaje lo mando la clinica, ES EL NOMBRE
+        -- DE LA CLINICA: media lista salia llamandose «Dental shine».
+        -- EL USUARIO no viaja en TODOS los mensajes del chat (solo en algunos salientes), asi
+        -- que se toma el ultimo que lo traiga. WhatsApp lo manda con arroba y sin ella; el de
+        -- verdad es SIN arroba, asi que se normaliza y se ensena con una sola.
+        -- OJO: nada de acentos graves en estos comentarios, que cierran el template literal.
+        WITH "ultimosDatos" AS (
+          SELECT
+            "Message"."key"->>'remoteJid' as "remoteJid",
+            (array_agg(NULLIF("Message"."pushName", '') ORDER BY "Message"."messageTimestamp" DESC)
+              FILTER (WHERE "Message"."key"->>'fromMe' = 'false'
+                        AND NULLIF("Message"."pushName", '') IS NOT NULL
+                        AND "Message"."pushName" <> split_part("Message"."key"->>'remoteJid', '@', 1)))[1]
+              as "ultimoNombre",
+            (array_agg('@' || ltrim("Message"."key"->>'remoteJidUsername', '@') ORDER BY "Message"."messageTimestamp" DESC)
+              FILTER (WHERE "Message"."key"->>'remoteJidUsername' IS NOT NULL))[1]
+              as "usuarioWa"
+          FROM "Message"
+          WHERE "Message"."instanceId" = ${this.instanceId}
+          ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
+          GROUP BY 1
+        ),
+        rankedMessages AS (
           SELECT DISTINCT ON ("Message"."key"->>'remoteJid')
             "Contact"."id" as "contactId",
             "Message"."key"->>'remoteJid' as "remoteJid",
@@ -819,42 +850,10 @@ export class ChannelStartupService {
             -- literal de TypeScript y el build revienta con errores que no dicen eso.
             CASE
               WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
-              -- 🔴 PARCHE PD (9 sep 2026): EL NOMBRE SALE DEL ULTIMO MENSAJE **ENTRANTE**.
-              -- El pushName del mensaje mas reciente suele venir vacio y, cuando ese mensaje
-              -- lo mando la clinica, ES EL NOMBRE DE LA CLINICA: media lista salia llamandose
-              -- «Dental shine». Lo vio Luis: «arriba, donde deberia estar el nombre del
-              -- contacto, sale dental shine, no tiene sentido». No se notaba antes porque el
-              -- alias duplicado dejaba el nombre SIEMPRE nulo (ver b462f6c9): al arreglar
-              -- aquello, este otro quedo a la vista.
               -- NULLIF porque aqui lo vacio es cadena vacia, no NULL, y COALESCE no la salta.
-              ELSE COALESCE(
-                NULLIF("Contact"."pushName", ''),
-                (SELECT NULLIF(m3."pushName", '')
-                   FROM "Message" m3
-                  WHERE m3."instanceId" = "Message"."instanceId"
-                    AND m3."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
-                    AND m3."key"->>'fromMe' = 'false'
-                    AND NULLIF(m3."pushName", '') IS NOT NULL
-                    AND m3."pushName" <> split_part("Message"."key"->>'remoteJid', '@', 1)
-                  ORDER BY m3."messageTimestamp" DESC
-                  LIMIT 1)
-              )
+              ELSE COALESCE(NULLIF("Contact"."pushName", ''), "ultimosDatos"."ultimoNombre")
             END as "pushName",
-            -- El usuario no viaja en TODOS los mensajes del chat, asi que se busca el
-            -- ultimo que lo traiga y no solo en el mas reciente, que es el que fija el
-            -- DISTINCT ON de esta consulta. Va como campo propio: arriba se ensena el
-            -- nombre de la cuenta y ABAJO, donde iria el telefono que esta persona no
-            -- tiene, su nombre de usuario.
-            -- WhatsApp lo manda de las dos formas, con arroba delante y sin ella. El nombre
-            -- de usuario de verdad es SIN arroba, asi que se normaliza y se ensena con una
-            -- sola: si no, la misma lista mezcla @yeral_castillo_24 con issa.cuello.
-            (SELECT '@' || ltrim(m2."key"->>'remoteJidUsername', '@')
-               FROM "Message" m2
-              WHERE m2."instanceId" = "Message"."instanceId"
-                AND m2."key"->>'remoteJid' = "Message"."key"->>'remoteJid'
-                AND m2."key"->>'remoteJidUsername' IS NOT NULL
-              ORDER BY m2."messageTimestamp" DESC
-              LIMIT 1) as "usuarioWa",
+            "ultimosDatos"."usuarioWa" as "usuarioWa",
             "Contact"."profilePicUrl",
             COALESCE(
               to_timestamp("Message"."messageTimestamp"::double precision),
@@ -891,6 +890,7 @@ export class ChannelStartupService {
           FROM "Message"
           LEFT JOIN "Contact" ON "Contact"."remoteJid" = "Message"."key"->>'remoteJid' AND "Contact"."instanceId" = "Message"."instanceId"
           LEFT JOIN "Chat" ON "Chat"."remoteJid" = "Message"."key"->>'remoteJid' AND "Chat"."instanceId" = "Message"."instanceId"
+          LEFT JOIN "ultimosDatos" ON "ultimosDatos"."remoteJid" = "Message"."key"->>'remoteJid'
           WHERE "Message"."instanceId" = ${this.instanceId}
           ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
           ${timestampFilter}
