@@ -513,6 +513,8 @@ export class InstanceController {
       let profileName = inst.profileName;
       let profilePicUrl = inst.profilePicUrl;
       let nameStatus: string | null = null;
+      // What WhatsApp returned for a QR account: the profile name and the business name.
+      let whatsapp: { pushName?: string | null; verifiedName?: string | null } | null = null;
 
       try {
         if (inst.integration === Integration.WHATSAPP_BUSINESS) {
@@ -539,6 +541,7 @@ export class InstanceController {
             continue;
           }
           const live = await service.refreshOwnProfile();
+          whatsapp = { pushName: live.pushName ?? null, verifiedName: live.verifiedName ?? null };
           profileName = live.profileName || profileName;
           // A null picture here can be an error as well as «no picture»: keep the saved one.
           profilePicUrl = live.profilePicUrl || profilePicUrl;
@@ -565,6 +568,7 @@ export class InstanceController {
           nameChanged,
           pictureChanged,
           nameStatus,
+          whatsapp,
           before,
           after: { profileName, profilePicUrl },
         });

@@ -411,11 +411,40 @@ export class BaileysStartupService extends ChannelStartupService {
       this.logger.warn(`App state resync failed for "${this.instance.name}": ${error?.message ?? error}`);
     }
 
-    const profileName = await this.getProfileName();
+    // PD 2026-09-14: in a WhatsApp BUSINESS account the name people see is the business name,
+    // and it does NOT live in `pushNameSetting` nor in the business profile: it is the
+    // verified name certificate. Mundo Veneco's business name was changed on the phone and
+    // neither the session nor `fetchBusinessProfile` ever showed it. Asked here, it wins.
+    const pushName = await this.getProfileName();
+    const verifiedName = await this.fetchVerifiedName(this.instance.wuid);
     const { profilePictureUrl } = await this.profilePicture(this.instance.wuid);
     if (profilePictureUrl) this.instance.profilePictureUrl = profilePictureUrl;
 
-    return { profileName, profilePicUrl: profilePictureUrl };
+    return { profileName: verifiedName || pushName, profilePicUrl: profilePictureUrl, pushName, verifiedName };
+  }
+
+  /**
+   * PD 2026-09-14: the verified (business) name of a jid, straight from WhatsApp. It is the
+   * same certificate Baileys decodes from an incoming message (`verifiedBizName`), but asked
+   * for with the `w:biz` query instead of waiting for that account to write.
+   */
+  public async fetchVerifiedName(jid: string): Promise<string | null> {
+    try {
+      const result = await this.client.query({
+        tag: 'iq',
+        attrs: { to: 's.whatsapp.net', xmlns: 'w:biz', type: 'get' },
+        content: [{ tag: 'verified_name', attrs: { jid: jidNormalizedUser(jid) } }],
+      });
+      const node = (Array.isArray(result?.content) ? (result.content as BinaryNode[]) : []).find(
+        (child) => child.tag === 'verified_name',
+      );
+      if (!(node?.content instanceof Uint8Array)) return null;
+      const cert = proto.VerifiedNameCertificate.decode(node.content);
+      return proto.VerifiedNameCertificate.Details.decode(cert.details).verifiedName || null;
+    } catch (error) {
+      this.logger.warn(`Could not fetch the verified name of ${jid}: ${error?.message ?? error}`);
+      return null;
+    }
   }
 
   public async getProfileStatus() {
