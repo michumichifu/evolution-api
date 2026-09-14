@@ -526,10 +526,12 @@ export class InstanceController {
             if (!res.ok) throw new Error(body?.error?.message ?? `Graph ${res.status}`);
             return body;
           };
-          const info = await graph(`${inst.number}?fields=verified_name,name_status`);
+          // 🔴 `name_status` is the status of the CURRENT name (PD Cloud reads PENDING_REVIEW
+          // with no change requested). A new name under review is `new_name_status`.
+          const info = await graph(`${inst.number}?fields=verified_name,new_name_status`);
           const profile = await graph(`${inst.number}/whatsapp_business_profile?fields=profile_picture_url`);
           profileName = info?.verified_name || profileName;
-          nameStatus = info?.name_status ?? null;
+          nameStatus = info?.new_name_status ?? null;
           profilePicUrl = profile?.data?.[0]?.profile_picture_url || profilePicUrl;
         } else if (inst.integration === Integration.WHATSAPP_BAILEYS) {
           if (service.connectionStatus?.state !== 'open') {
@@ -544,8 +546,14 @@ export class InstanceController {
           continue;
         }
 
-        const updated = profileName !== inst.profileName || profilePicUrl !== inst.profilePicUrl;
-        if (updated) {
+        // 🔴 The picture URL changes on EVERY request (it carries its own signature and expiry,
+        // `oh`/`oe`), so comparing URLs reported «updated» with the very same photo. What
+        // changes when the photo does is the file id in the path.
+        const fileId = (url?: string | null) => url?.match(/\/v\/[^/]+\/(\d+_\d+)_/)?.[1] ?? url ?? null;
+        const nameChanged = profileName !== inst.profileName;
+        const pictureChanged = fileId(profilePicUrl) !== fileId(inst.profilePicUrl);
+        if (nameChanged || profilePicUrl !== inst.profilePicUrl) {
+          // A fresh URL of the same photo is saved anyway: the old one expires.
           await this.prismaRepository.instance.update({
             where: { id: inst.id },
             data: { profileName, profilePicUrl },
@@ -553,9 +561,9 @@ export class InstanceController {
         }
         results.push({
           instanceName: inst.name,
-          updated,
-          nameChanged: profileName !== inst.profileName,
-          pictureChanged: profilePicUrl !== inst.profilePicUrl,
+          updated: nameChanged || pictureChanged,
+          nameChanged,
+          pictureChanged,
           nameStatus,
           before,
           after: { profileName, profilePicUrl },
