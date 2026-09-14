@@ -489,6 +489,86 @@ export class InstanceController {
     return { results, restored: results.filter((r) => r.restored).length, requested: chosen.length };
   }
 
+  /**
+   * PD 2026-09-14: the Manager's «Actualizar» button only re-read the database, and the
+   * database only receives the profile name and picture when an instance CONNECTS. A name
+   * changed on the phone never reached the screen, while the picture seemed to (it came in
+   * with the next reconnection). This asks WhatsApp (QR) or Meta (Cloud API) and saves.
+   *
+   * Cloud API: `verified_name` is the name Meta APPROVED. While a change is under review
+   * (`name_status: PENDING_REVIEW`) Meta keeps returning the old one, and there is nothing
+   * to force: the status is returned so the Manager can say so.
+   */
+  public async refreshProfiles({ instanceNames }: { instanceNames?: string[] }) {
+    const instances = await this.prismaRepository.instance.findMany({
+      where: instanceNames?.length ? { name: { in: instanceNames } } : {},
+    });
+
+    const results = [];
+    for (const inst of instances) {
+      const service = this.waMonitor.waInstances[inst.name];
+      if (!service) continue;
+
+      const before = { profileName: inst.profileName, profilePicUrl: inst.profilePicUrl };
+      let profileName = inst.profileName;
+      let profilePicUrl = inst.profilePicUrl;
+      let nameStatus: string | null = null;
+
+      try {
+        if (inst.integration === Integration.WHATSAPP_BUSINESS) {
+          const { URL: base, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
+          const graph = async (path: string) => {
+            const res = await fetch(`${base}/${VERSION}/${path}`, {
+              headers: { Authorization: `Bearer ${inst.token}` },
+              signal: AbortSignal.timeout(15000),
+            });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body?.error?.message ?? `Graph ${res.status}`);
+            return body;
+          };
+          const info = await graph(`${inst.number}?fields=verified_name,name_status`);
+          const profile = await graph(`${inst.number}/whatsapp_business_profile?fields=profile_picture_url`);
+          profileName = info?.verified_name || profileName;
+          nameStatus = info?.name_status ?? null;
+          profilePicUrl = profile?.data?.[0]?.profile_picture_url || profilePicUrl;
+        } else if (inst.integration === Integration.WHATSAPP_BAILEYS) {
+          if (service.connectionStatus?.state !== 'open') {
+            results.push({ instanceName: inst.name, updated: false, skipped: 'not connected', before });
+            continue;
+          }
+          const live = await service.refreshOwnProfile();
+          profileName = live.profileName || profileName;
+          // A null picture here can be an error as well as «no picture»: keep the saved one.
+          profilePicUrl = live.profilePicUrl || profilePicUrl;
+        } else {
+          continue;
+        }
+
+        const updated = profileName !== inst.profileName || profilePicUrl !== inst.profilePicUrl;
+        if (updated) {
+          await this.prismaRepository.instance.update({
+            where: { id: inst.id },
+            data: { profileName, profilePicUrl },
+          });
+        }
+        results.push({
+          instanceName: inst.name,
+          updated,
+          nameChanged: profileName !== inst.profileName,
+          pictureChanged: profilePicUrl !== inst.profilePicUrl,
+          nameStatus,
+          before,
+          after: { profileName, profilePicUrl },
+        });
+      } catch (error) {
+        this.logger.error(`Could not refresh the profile of "${inst.name}": ${error?.message ?? error}`);
+        results.push({ instanceName: inst.name, updated: false, error: error?.message ?? String(error), before });
+      }
+    }
+
+    return { results, updated: results.filter((r) => r.updated).length, requested: results.length };
+  }
+
   public async fetchInstances({ instanceName, instanceId, number }: InstanceDto, key: string) {
     const env = this.configService.get<Auth>('AUTHENTICATION').API_KEY;
 

@@ -78,6 +78,13 @@ export class InstanceRouter extends RouterBroker {
 
         return res.status(HttpStatus.OK).json(response);
       })
+      // PD 2026-09-14: the Manager's «Actualizar» button. Asks WhatsApp / Meta for the
+      // current profile name and picture instead of re-reading the database.
+      .post('/refreshProfiles', ...guards, async (req, res) => {
+        const response = await instanceController.refreshProfiles(req.body ?? {});
+
+        return res.status(HttpStatus.OK).json(response);
+      })
       .post(this.routerPath('setPresence'), ...guards, async (req, res) => {
         const response = await this.dataValidate<null>({
           request: req,

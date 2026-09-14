@@ -394,6 +394,30 @@ export class BaileysStartupService extends ChannelStartupService {
     return profileName;
   }
 
+  /**
+   * PD 2026-09-14: the name and picture of the connected account, asked NOW.
+   *
+   * The name does not come from a query: WhatsApp keeps it in the app state, in the
+   * `critical_block` collection (`pushNameSetting`), and only sends it to linked devices with
+   * a `server_sync` notice. If that notice was missed, the session kept the old name for good
+   * — and every reconnection wrote the old name again. Resyncing the collection brings the
+   * change; Baileys then emits `creds.update` and `client.user.name` has the new one
+   * (`resyncAppState` is buffered, so the event is flushed before the await returns).
+   */
+  public async refreshOwnProfile() {
+    try {
+      await this.client.resyncAppState(['critical_block'], false);
+    } catch (error) {
+      this.logger.warn(`App state resync failed for "${this.instance.name}": ${error?.message ?? error}`);
+    }
+
+    const profileName = await this.getProfileName();
+    const { profilePictureUrl } = await this.profilePicture(this.instance.wuid);
+    if (profilePictureUrl) this.instance.profilePictureUrl = profilePictureUrl;
+
+    return { profileName, profilePicUrl: profilePictureUrl };
+  }
+
   public async getProfileStatus() {
     const status = await this.client.fetchStatus(this.instance.wuid);
 
@@ -2266,6 +2290,22 @@ export class BaileysStartupService extends ChannelStartupService {
 
             if (events['creds.update']) {
               this.instance.authState.saveCreds();
+
+              // PD 2026-09-14: the profile name only reached the database when connecting,
+              // so a name changed on the phone stayed old on screen until the next
+              // reconnection — and not even then if the session had missed it. Save it
+              // as soon as WhatsApp sends it.
+              const newName = events['creds.update']?.me?.name;
+              if (newName) {
+                this.prismaRepository.instance
+                  .updateMany({
+                    where: { id: this.instanceId, OR: [{ profileName: null }, { profileName: { not: newName } }] },
+                    data: { profileName: newName },
+                  })
+                  .catch((error) =>
+                    this.logger.warn(`Could not save the new profile name: ${error?.message ?? error}`),
+                  );
+              }
             }
 
             if (events['messaging-history.set']) {
