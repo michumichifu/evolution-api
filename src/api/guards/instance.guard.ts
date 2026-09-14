@@ -26,11 +26,14 @@ export async function instanceExistsGuard(req: Request, _: Response, next: NextF
   // PD 2026-09-06: `restorableSessions` y `restoreSessions` hablan de TODAS las instancias
   // a la vez, igual que `fetchInstances`, así que no llevan instanceName en la ruta. Sin
   // esta línea el guard las corta con un 400 y el controlador no llega a verlas.
+  // PD 2026-09-14: `refreshProfiles` (el botón «Actualizar» del Manager) es igual, y cayó
+  // en la misma trampa: la ruta nueva contestaba 400 «instanceName not provided».
   if (
     req.originalUrl.includes('/instance/create') ||
     req.originalUrl.includes('/instance/fetchInstances') ||
     req.originalUrl.includes('/instance/restorableSessions') ||
-    req.originalUrl.includes('/instance/restoreSessions')
+    req.originalUrl.includes('/instance/restoreSessions') ||
+    req.originalUrl.includes('/instance/refreshProfiles')
   ) {
     return next();
   }
