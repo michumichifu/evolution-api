@@ -3384,10 +3384,19 @@ export class ChatwootService {
           // PD (27 sep 2026): la tarjeta lleva también la bienvenida del anuncio, y se arma aparte
           // para poder mandarla SIN imagen: antes, si la miniatura no venía o no bajaba, el `return`
           // de abajo tiraba el mensaje entero y en Chatwoot no aparecía NI el texto del paciente.
+          // De qué red viene, con el criterio de la tarjeta de WhatsApp: por QR, `entryPointConversionApp`;
+          // si no, el enlace del anuncio (fb.me/facebook.com → Facebook, instagram.com → Instagram).
+          const pista = `${body?.contextInfo?.entryPointConversionApp || ''} ${adsMessage.sourceUrl || ''}`;
+          const red = /instagram/i.test(pista)
+            ? 'Instagram'
+            : /facebook|(^|\/\/|\.)fb\.(me|com)\b/i.test(pista)
+              ? 'Facebook'
+              : '';
           const tarjeta = [
             bodyMessage,
             '',
             '',
+            red ? `_Desde un anuncio de ${red}_` : '_Desde un anuncio_',
             title ? `**${title}**` : '',
             description,
             adsMessage.greetingMessageBody ? `_Bienvenida: ${truncStr(adsMessage.greetingMessageBody, 160)}_` : '',
@@ -3427,11 +3436,11 @@ export class ChatwootService {
           const nameFile = `${random}.${mimeTypes.extension(mimeType)}`;
           const fileData = Buffer.from(imgBuffer.data, 'binary');
 
+          // PD (27 sep 2026): la imagen va ENTERA, sin el recorte a 320×180 que la dejaba en banner
+          // (Luis: «no se ve la imagen completa, se ve como un banner… debería verse el formato de la
+          // imagen»). Solo se achica si es muy grande, y sin cambiarle la proporción.
           const img = await Jimp.read(fileData);
-          await img.cover({
-            w: 320,
-            h: 180,
-          });
+          if (img.bitmap.width > 800) img.resize({ w: 800 });
           const processedBuffer = await img.getBuffer(JimpMime.png);
 
           const fileStream = new Readable();
