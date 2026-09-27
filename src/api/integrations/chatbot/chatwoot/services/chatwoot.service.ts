@@ -2338,9 +2338,14 @@ export class ChatwootService {
       body: string;
       thumbnailUrl: string;
       sourceUrl: string;
+      greetingMessageBody?: string;
     }
 
     const adsMessage: AdsMessage | undefined = {
+      // PD (27 sep 2026): la bienvenida que vio la persona al abrir el chat desde el anuncio.
+      greetingMessageBody:
+        msg.extendedTextMessage?.contextInfo?.externalAdReply?.greetingMessageBody ||
+        msg.contextInfo?.externalAdReply?.greetingMessageBody,
       title: msg.extendedTextMessage?.contextInfo?.externalAdReply?.title || msg.contextInfo?.externalAdReply?.title,
       body: msg.extendedTextMessage?.contextInfo?.externalAdReply?.body || msg.contextInfo?.externalAdReply?.body,
       thumbnailUrl:
@@ -3368,14 +3373,54 @@ export class ChatwootService {
 
         const isAdsMessage = (adsMessage && adsMessage.title) || adsMessage.body || adsMessage.thumbnailUrl;
         if (isAdsMessage) {
-          const imgBuffer = await axios.get(adsMessage.thumbnailUrl, { responseType: 'arraybuffer' });
+          const truncStr = (str: string, len: number) => {
+            if (!str) return '';
 
-          const extension = mimeTypes.extension(String(imgBuffer.headers['content-type']));
+            return str.length > len ? str.substring(0, len) + '...' : str;
+          };
+
+          const title = truncStr(adsMessage.title, 40);
+          const description = truncStr(adsMessage?.body, 75);
+          // PD (27 sep 2026): la tarjeta lleva también la bienvenida del anuncio, y se arma aparte
+          // para poder mandarla SIN imagen: antes, si la miniatura no venía o no bajaba, el `return`
+          // de abajo tiraba el mensaje entero y en Chatwoot no aparecía NI el texto del paciente.
+          const tarjeta = [
+            bodyMessage,
+            '',
+            '',
+            title ? `**${title}**` : '',
+            description,
+            adsMessage.greetingMessageBody ? `_Bienvenida: ${truncStr(adsMessage.greetingMessageBody, 160)}_` : '',
+            adsMessage.sourceUrl || '',
+          ]
+            .filter((linea, i) => i < 3 || linea)
+            .join('\n');
+
+          let imgBuffer: any = null;
+          try {
+            if (adsMessage.thumbnailUrl) {
+              imgBuffer = await axios.get(adsMessage.thumbnailUrl, { responseType: 'arraybuffer' });
+            }
+          } catch (error) {
+            this.logger.warn(`miniatura del anuncio no disponible: ${error}`);
+          }
+
+          const extension = imgBuffer && mimeTypes.extension(String(imgBuffer.headers['content-type']));
           const mimeType = extension && mimeTypes.lookup(extension);
 
           if (!mimeType) {
-            this.logger.warn('mimetype of Ads message not found');
-            return;
+            const sinImagen = await this.createMessage(
+              instance,
+              getConversation,
+              tarjeta,
+              messageType,
+              false,
+              [],
+              body,
+              'WAID:' + body.key.id,
+            );
+            if (!sinImagen) this.logger.warn('message not sent');
+            return sinImagen;
           }
 
           const random = Math.random().toString(36).substring(7);
@@ -3394,21 +3439,12 @@ export class ChatwootService {
           fileStream.push(processedBuffer);
           fileStream.push(null);
 
-          const truncStr = (str: string, len: number) => {
-            if (!str) return '';
-
-            return str.length > len ? str.substring(0, len) + '...' : str;
-          };
-
-          const title = truncStr(adsMessage.title, 40);
-          const description = truncStr(adsMessage?.body, 75);
-
           const send = await this.sendData(
             getConversation,
             fileStream,
             nameFile,
             messageType,
-            `${bodyMessage}\n\n\n**${title}**\n${description}\n${adsMessage.sourceUrl}`,
+            tarjeta,
             instance,
             body,
             'WAID:' + body.key.id,

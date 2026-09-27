@@ -231,6 +231,26 @@ export class BusinessStartupService extends ChannelStartupService {
     return content;
   }
 
+  // PD (27 sep 2026): el `referral` de la Cloud API con los nombres de campo del `externalAdReply` de
+  // Baileys. Campos de Meta: …/whatsapp/webhooks/reference/messages/text.md. Devuelve null si no viene
+  // de un anuncio, para no pegarle a cada mensaje un contexto vacío.
+  private anuncioDeReferral(r: any) {
+    if (!r || typeof r !== 'object') return null;
+    const anuncio = {
+      title: r.headline || '',
+      body: r.body || '',
+      thumbnailUrl: r.thumbnail_url || r.image_url || '',
+      mediaUrl: r.video_url || r.image_url || '',
+      mediaType: r.media_type || '',
+      sourceUrl: r.source_url || '',
+      sourceId: r.source_id || '',
+      sourceType: r.source_type || '',
+      ctwaClid: r.ctwa_clid || '',
+      greetingMessageBody: r.welcome_message?.text || '',
+    };
+    return anuncio.sourceUrl || anuncio.sourceId || anuncio.title || anuncio.body ? anuncio : null;
+  }
+
   private messageTextJson(received: any) {
     // Verificar que received y received.messages existen
     if (!received || !received.messages || received.messages.length === 0) {
@@ -681,6 +701,18 @@ export class BusinessStartupService extends ChannelStartupService {
             source: 'unknown',
             instanceId: this.instanceId,
           };
+        }
+
+        // 🔴 PARCHE PD (27 sep 2026): DE QUÉ ANUNCIO VIENE QUIEN ESCRIBE.
+        // Cuando alguien escribe desde un anuncio de clic a WhatsApp, Meta manda en el primer mensaje
+        // un `referral` (enlace e id del anuncio, título, texto, imagen, bienvenida y `ctwa_clid`), y
+        // Evolution lo tiraba: `messageTextJson` y compañía solo copian el contenido. Se guarda con la
+        // forma que ya usa Baileys (`contextInfo.externalAdReply`), así que la tarjeta de anuncio de la
+        // integración con Chatwoot, el chat del Manager y los webhooks a n8n lo recogen igual para los
+        // dos canales. Luis: «Eso es importante saberlo para saber sobre qué responderle».
+        const anuncio = this.anuncioDeReferral(message.referral);
+        if (anuncio && messageRaw) {
+          messageRaw.contextInfo = { ...(messageRaw.contextInfo || {}), externalAdReply: anuncio };
         }
 
         if (this.localSettings.readMessages) {
