@@ -750,9 +750,20 @@ export class BusinessStartupService extends ChannelStartupService {
           pushName: messageRaw.pushName,
         });
 
-        if (!this.isMediaMessage(message) && message.type !== 'sticker') {
+        // 🔴 PARCHE PD (27 sep 2026): LOS AUDIOS, FOTOS Y DOCUMENTOS QUE LLEGAN TAMBIÉN SE GUARDAN.
+        // Aquí solo se guardaba lo que NO es archivo: un archivo se guardaba únicamente en la rama de S3
+        // (arriba), y sin S3 —como aquí— ningún audio, foto, video, documento ni sticker de la Cloud API
+        // existía en la base de Evolution: su chat enseñaba solo el texto (Luis: «en el chat de Evolution
+        // no se ve ningún mensaje del usuario, solo el mensaje inicial»). Se guarda con la referencia de
+        // Meta (el id del archivo) y SIN el base64, que inflaría la base; el Manager lo pide al abrirlo
+        // con `getBase64FromMediaMessage`, que lo descarga de Meta por ese id.
+        const s3Activo = this.configService.get<S3>('S3').ENABLE;
+        const esArchivo = this.isMediaMessage(message) || message.type === 'sticker';
+        if (!esArchivo || !s3Activo) {
+          const contenido: any = { ...(messageRaw.message || {}) };
+          if (esArchivo) delete contenido.base64;
           await this.prismaRepository.message.create({
-            data: messageRaw,
+            data: { ...messageRaw, message: contenido },
           });
         }
 
