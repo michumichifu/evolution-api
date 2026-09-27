@@ -2031,6 +2031,20 @@ export class ChatwootService {
           return { message: 'bot' };
         }
 
+        // 🔴 PARCHE PD (27 sep 2026): UN COMANDO DEL BOT NO SE LE ENVÍA AL PACIENTE. La gestora escribe
+        // `#pausa`, `#activa`, `#lista`… en la conversación para parar o soltar al bot, y ese mensaje lo
+        // lee el flujo de n8n por el webhook de la cuenta. Desde que la bandeja entrega por Evolution, se
+        // lo mandábamos también al paciente. Luis: «originalmente uno escribe en la conversación y se
+        // activaba o desactivaba y no le salía al paciente en su WhatsApp». Solo cuenta un mensaje que es
+        // ÚNICAMENTE el comando (con o sin un número detrás): una frase con un `#` dentro sí se envía.
+        const esComandoDelBot =
+          !body.conversation?.messages?.[0]?.attachments?.length &&
+          /^\s*#[a-z0-9áéíóúñ-]+(\s+\+?[\d\s-]{7,20})?\s*$/i.test(String(body.content || ''));
+        if (esComandoDelBot) {
+          this.logger.log(`Comando del bot, no se envía al paciente: ${String(body.content).trim()}`);
+          return { message: 'bot' };
+        }
+
         let formatText: string;
         if (senderName === null || senderName === undefined) {
           formatText = messageReceived;

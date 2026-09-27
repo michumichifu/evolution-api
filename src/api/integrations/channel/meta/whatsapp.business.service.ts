@@ -1084,6 +1084,8 @@ export class BusinessStartupService extends ChannelStartupService {
                 message['fileName'] &&
                 !isImage && { filename: message['fileName'] }),
               ...(message['mediaType'] !== 'audio' && message['caption'] && { caption: message['caption'] }),
+              // PD (27 sep 2026): un ogg/opus sale como NOTA DE VOZ (ver `processAudio`).
+              ...(message['mediaType'] === 'audio' && message['mimetype'] === 'audio/ogg' && { voice: true }),
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
@@ -1415,10 +1417,20 @@ export class BusinessStartupService extends ChannelStartupService {
     } else {
       let mimetype: string | false;
 
+      // 🔴 PARCHE PD (27 sep 2026): UNA NOTA DE VOZ ES OGG/OPUS, NO MP3. Todo audio en base64 se subía
+      // a Meta llamado `.mp3` y SIN tipo (el `mimetype` se ponía después de subirlo), y Meta exige
+      // que el tipo case con el archivo. Un ogg (empieza por `OggS`, en base64 `T2dnUw`) va ahora como
+      // `audio/ogg`, y el envío lo marca `voice: true`: nota de voz de verdad, con el micrófono, la
+      // foto de perfil y la transcripción en el teléfono (doc de Meta «Audio messages»).
+      const esOgg =
+        (!file && typeof audio === 'string' && !isURL(audio) && audio.startsWith('T2dnUw')) ||
+        (!!file && /ogg/i.test(file?.mimetype || ''));
+
       const prepareMedia: any = {
-        fileName: `${hash}.mp3`,
+        fileName: `${hash}.${esOgg ? 'ogg' : 'mp3'}`,
         mediaType: 'audio',
         media: audio,
+        ...(esOgg ? { mimetype: 'audio/ogg' } : {}),
       };
 
       if (isURL(audio)) {
@@ -1426,7 +1438,7 @@ export class BusinessStartupService extends ChannelStartupService {
         prepareMedia.id = audio;
         prepareMedia.type = 'link';
       } else if (audio && !file) {
-        mimetype = mimeTypes.lookup(prepareMedia.fileName);
+        mimetype = esOgg ? 'audio/ogg' : mimeTypes.lookup(prepareMedia.fileName);
         const id = await this.getIdMedia(prepareMedia);
         prepareMedia.id = id;
         prepareMedia.type = 'id';
@@ -1685,7 +1697,9 @@ export class BusinessStartupService extends ChannelStartupService {
           height: mediaMessage?.fileLength,
           width: mediaMessage?.width,
         },
-        mimetype: mediaMessage?.mime_type,
+        // PD (27 sep 2026): lo que llega de Meta trae `mime_type`; lo que envía Evolution, `mimetype`.
+        // Sin el segundo, la nota de voz de Marie llegaba a Chatwoot sin tipo, como archivo suelto.
+        mimetype: mediaMessage?.mime_type || mediaMessage?.mimetype,
         base64: msg.message.base64,
       };
     } catch (error) {
