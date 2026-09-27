@@ -1984,6 +1984,16 @@ export class BaileysStartupService extends ChannelStartupService {
           }
         }
 
+        // PD (27 sep 2026): el estado de entrega de CADA mensaje también a Chatwoot (entregado, leído,
+        // fallido), no solo el «visto» de la conversación. Ver `actualizarEstadoEnChatwoot`.
+        if (key.fromMe && this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+          this.chatwootService.actualizarEstadoEnChatwoot(
+            { instanceName: this.instance.name, instanceId: this.instanceId },
+            key.id,
+            status[update.status],
+          );
+        }
+
         if (key.remoteJid !== 'status@broadcast' && key.id !== undefined) {
           let pollUpdates: any;
 

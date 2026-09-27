@@ -871,6 +871,16 @@ export class BusinessStartupService extends ChannelStartupService {
               data: message,
             });
 
+            // PD (27 sep 2026): el estado de entrega también a Chatwoot (ver `actualizarEstadoEnChatwoot`).
+            if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+              this.chatwootService.actualizarEstadoEnChatwoot(
+                { instanceName: this.instance.name, instanceId: this.instanceId },
+                key.id,
+                message.status,
+                item.errors?.[0]?.error_data?.details || item.errors?.[0]?.title || item.errors?.[0]?.message,
+              );
+            }
+
             if (findMessage.webhookUrl) {
               await axios.post(findMessage.webhookUrl, message);
             }
@@ -1204,11 +1214,22 @@ export class BusinessStartupService extends ChannelStartupService {
       this.sendDataWebhook(Events.SEND_MESSAGE, messageRaw);
 
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && !isIntegration) {
-        this.chatwootService.eventWhatsapp(
-          Events.SEND_MESSAGE,
-          { instanceName: this.instance.name, instanceId: this.instanceId },
-          messageRaw,
-        );
+        // PD (27 sep 2026): se espera a Chatwoot y se guarda el enlace, como con lo que entra. Sin él,
+        // lo enviado por la API de Evolution (la nota de voz de Marie) no podía recibir en Chatwoot su
+        // estado de entrega. Con tope de tiempo: un Chatwoot lento no puede frenar el envío.
+        const enChatwoot: any = await Promise.race([
+          this.chatwootService.eventWhatsapp(
+            Events.SEND_MESSAGE,
+            { instanceName: this.instance.name, instanceId: this.instanceId },
+            messageRaw,
+          ),
+          new Promise((ok) => setTimeout(() => ok(null), 20000)),
+        ]).catch(() => null);
+        if (enChatwoot?.id) {
+          messageRaw.chatwootMessageId = enChatwoot.id;
+          messageRaw.chatwootInboxId = enChatwoot.inbox_id;
+          messageRaw.chatwootConversationId = enChatwoot.conversation_id;
+        }
       }
 
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && isIntegration)

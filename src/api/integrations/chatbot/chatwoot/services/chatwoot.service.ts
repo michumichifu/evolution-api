@@ -2265,6 +2265,55 @@ export class ChatwootService {
     }
   }
 
+  /**
+   * 🔴 PARCHE PD (27 sep 2026): EL ESTADO DE ENTREGA DE LO QUE SE ENVÍA DESDE CHATWOOT.
+   *
+   * Las bandejas de Chatwoot son de tipo API, y ahí el check (enviado / entregado / leído / fallido)
+   * sale del `status` del mensaje, que tiene que ponerlo el sistema externo. Evolution recibía esos
+   * estados —de Meta en la Cloud API, de WhatsApp por QR— y los guardaba en `MessageUpdate`, pero
+   * NUNCA se los pasaba a Chatwoot: todo se quedaba en «enviado». Luis: «me interesa que los
+   * mensajes que yo o la gente escriba desde Chatwoot puedan mostrar exactamente el estado de
+   * entrega». Va por la API oficial (`PATCH …/messages/:id`, solo bandejas API), no por la base de
+   * Chatwoot: así no hace falta la conexión directa, que enciende además las importaciones.
+   *
+   * No se manda «enviado» (es el estado con el que Chatwoot ya crea el mensaje), y Chatwoot no deja
+   * bajar de «leído» a «entregado», así que un aviso que llegue desordenado no hace daño.
+   */
+  public async actualizarEstadoEnChatwoot(instance: InstanceDto, keyId: string, estado: string, error?: string) {
+    const MAPA: Record<string, string> = {
+      DELIVERY_ACK: 'delivered',
+      DELIVERED: 'delivered',
+      READ: 'read',
+      PLAYED: 'read',
+      FAILED: 'failed',
+      ERROR: 'failed',
+    };
+    const status = MAPA[String(estado || '').toUpperCase()];
+    if (!status || !keyId) return;
+
+    try {
+      // Lo que sale de Chatwoot se enlaza DESPUÉS de enviarse, y el primer aviso de Meta puede llegar
+      // antes: si aún no hay enlace, se espera un poco y se vuelve a mirar una vez.
+      let mensaje = await this.getMessageByKeyId(instance, keyId);
+      if (!mensaje?.chatwootMessageId) {
+        await new Promise((ok) => setTimeout(ok, 3000));
+        mensaje = await this.getMessageByKeyId(instance, keyId);
+      }
+      if (!mensaje?.chatwootMessageId || !mensaje?.chatwootConversationId) return;
+
+      const client = await this.clientCw(instance);
+      if (!client) return;
+
+      await chatwootRequest(this.getClientCwConfig(), {
+        method: 'PATCH',
+        url: `/api/v1/accounts/${this.provider.accountId}/conversations/${mensaje.chatwootConversationId}/messages/${mensaje.chatwootMessageId}`,
+        body: { status, ...(status === 'failed' && error ? { external_error: String(error).slice(0, 250) } : {}) },
+      });
+    } catch (e) {
+      this.logger.warn(`No se pudo pasar el estado «${status}» a Chatwoot (${keyId}): ${e}`);
+    }
+  }
+
   private async getMessageByKeyId(instance: InstanceDto, keyId: string): Promise<MessageModel> {
     const provider = this.configService.get<Database>('DATABASE').PROVIDER;
     let messages: MessageModel[];
