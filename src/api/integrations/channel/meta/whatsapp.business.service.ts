@@ -136,7 +136,10 @@ export class BusinessStartupService extends ChannelStartupService {
     const content = data.entry[0].changes[0].value;
 
     try {
-      this.loadChatwoot();
+      // 🔴 PARCHE PD (27 sep 2026): SE ESPERA. Sin el `await`, el primer mensaje tras reiniciar
+      // Evolution llegaba con `localChatwoot` aún vacío y NO se mandaba a Chatwoot (sin un solo aviso
+      // en el log): le pasó al primer mensaje con anuncio de Luis, a las 04:45 UTC.
+      await this.loadChatwoot();
 
       // PD: quien oculta su número en Cloud API no manda `from`, sino `from_user_id` (o el
       // `user_id` del contacto); en los estados, `recipient_user_id`. Sin esto el evento se
