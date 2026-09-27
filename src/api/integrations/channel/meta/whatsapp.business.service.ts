@@ -1228,6 +1228,12 @@ export class BusinessStartupService extends ChannelStartupService {
         // PD (27 sep 2026): se espera a Chatwoot y se guarda el enlace, como con lo que entra. Sin él,
         // lo enviado por la API de Evolution (la nota de voz de Marie) no podía recibir en Chatwoot su
         // estado de entrega. Con tope de tiempo: un Chatwoot lento no puede frenar el envío.
+        // PD (27 sep 2026): QUIÉN FIRMA LA COPIA EN CHATWOOT. Si quien envía por la API es un bot que
+        // pasa el token de su Agent Bot (`pdFirmaChatwoot`), la copia sale a su nombre y no al del dueño
+        // del token de la integración (la nota de voz de Marie salía como «José Rangel Admin»). Viaja
+        // solo durante esta llamada: se borra antes de guardar el mensaje y de devolver la respuesta.
+        const firma = (options as any)?.pdFirmaChatwoot;
+        if (firma) messageRaw.pdFirmaChatwoot = firma;
         const enChatwoot: any = await Promise.race([
           this.chatwootService.eventWhatsapp(
             Events.SEND_MESSAGE,
@@ -1236,6 +1242,7 @@ export class BusinessStartupService extends ChannelStartupService {
           ),
           new Promise((ok) => setTimeout(() => ok(null), 20000)),
         ]).catch(() => null);
+        delete messageRaw.pdFirmaChatwoot;
         if (enChatwoot?.id) {
           messageRaw.chatwootMessageId = enChatwoot.id;
           messageRaw.chatwootInboxId = enChatwoot.inbox_id;
@@ -1501,7 +1508,9 @@ export class BusinessStartupService extends ChannelStartupService {
         linkPreview: data?.linkPreview,
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
-      },
+        // PD (27 sep 2026): el token del Agent Bot que firma la copia en Chatwoot (ver sendMessageWithTyping).
+        ...((data as any)?.pdFirmaChatwoot ? { pdFirmaChatwoot: (data as any).pdFirmaChatwoot } : {}),
+      } as any,
       isIntegration,
     );
 

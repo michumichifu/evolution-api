@@ -1683,7 +1683,8 @@ export class ChatwootService {
       maxBodyLength: Infinity,
       url: `${this.provider.url}/api/v1/accounts/${this.provider.accountId}/conversations/${conversationId}/messages`,
       headers: {
-        api_access_token: this.provider.token,
+        // PD (27 sep 2026): si lo envió un bot con su token (`pdFirmaChatwoot`), la copia va a su nombre.
+        api_access_token: messageBody?.pdFirmaChatwoot || this.provider.token,
         ...data.getHeaders(),
       },
       data: data,
