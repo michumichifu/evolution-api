@@ -1279,6 +1279,8 @@ export class ChatwootService {
     // PD: estructura del mensaje interactivo (botones, lista, PIX, catálogo) para que Chatwoot lo
     // pinte como tarjeta en vez de como texto. Viaja en `content_attributes.pd_interactivo`.
     interactivo?: Record<string, any>,
+    // PD (27 sep 2026): el anuncio del que viene el mensaje, para la tarjeta del fork (`pd_anuncio`).
+    anuncio?: Record<string, any>,
   ) {
     const client = await this.clientCw(instance);
 
@@ -1347,6 +1349,13 @@ export class ChatwootService {
       messageData.content_attributes = {
         ...(messageData.content_attributes || {}),
         pd_interactivo: interactivo,
+      };
+    }
+
+    if (anuncio) {
+      messageData.content_attributes = {
+        ...(messageData.content_attributes || {}),
+        pd_anuncio: anuncio,
       };
     }
 
@@ -1624,6 +1633,8 @@ export class ChatwootService {
     messageBody?: any,
     sourceId?: string,
     quotedMsg?: MessageModel,
+    // PD (27 sep 2026): claves propias de `content_attributes` (hoy, `pd_anuncio`) que el fork pinta.
+    atributosExtra?: Record<string, any>,
   ) {
     if (sourceId && this.isImportHistoryAvailable()) {
       const messageAlreadySaved = await chatwootImport.getExistingSourceIds([sourceId], conversationId);
@@ -1646,16 +1657,17 @@ export class ChatwootService {
 
     const sourceReplyId = quotedMsg?.chatwootMessageId || null;
 
+    let atributos: Record<string, any> = { ...(atributosExtra || {}) };
     if (messageBody && instance) {
       const replyToIds = await this.getReplyToIds(messageBody, instance);
 
       // Filtra valores null/undefined antes de enviar
       const filteredReplyToIds = Object.fromEntries(Object.entries(replyToIds).filter(([, value]) => value != null));
+      atributos = { ...filteredReplyToIds, ...atributos };
+    }
 
-      if (Object.keys(filteredReplyToIds).length > 0) {
-        const contentAttrs = JSON.stringify(filteredReplyToIds);
-        data.append('content_attributes', contentAttrs);
-      }
+    if (Object.keys(atributos).length > 0) {
+      data.append('content_attributes', JSON.stringify(atributos));
     }
 
     if (sourceReplyId) {
@@ -3392,18 +3404,28 @@ export class ChatwootService {
             : /facebook|(^|\/\/|\.)fb\.(me|com)\b/i.test(pista)
               ? 'Facebook'
               : '';
+          // PD (27 sep 2026): EN EL ORDEN DEL TELÉFONO (Luis: «mismo orden como te lo mostré en la
+          // captura de WhatsApp»): el rótulo, el anuncio y, al final, el mensaje del paciente. El fork
+          // de Chatwoot lo pinta como tarjeta con `pd_anuncio`; este texto es lo que se ve en el correo
+          // de aviso, en el buscador y en cualquier cliente que no sea el fork.
           const tarjeta = [
-            bodyMessage,
-            '',
-            '',
-            red ? `_Desde un anuncio de ${red}_` : '_Desde un anuncio_',
+            red ? `_Mensaje a partir de un anuncio de ${red}_` : '_Mensaje a partir de un anuncio_',
             title ? `**${title}**` : '',
             description,
-            adsMessage.greetingMessageBody ? `_Bienvenida: ${truncStr(adsMessage.greetingMessageBody, 160)}_` : '',
             adsMessage.sourceUrl || '',
+            '',
+            bodyMessage,
           ]
-            .filter((linea, i) => i < 3 || linea)
+            .filter((linea, i) => i >= 4 || linea)
             .join('\n');
+          const pdAnuncio = {
+            red: red.toLowerCase(),
+            titulo: adsMessage.title || '',
+            texto: adsMessage.body || '',
+            enlace: adsMessage.sourceUrl || '',
+            bienvenida: adsMessage.greetingMessageBody || '',
+            mensaje: bodyMessage || '',
+          };
 
           let imgBuffer: any = null;
           try {
@@ -3427,6 +3449,9 @@ export class ChatwootService {
               [],
               body,
               'WAID:' + body.key.id,
+              undefined,
+              undefined,
+              pdAnuncio,
             );
             if (!sinImagen) this.logger.warn('message not sent');
             return sinImagen;
@@ -3457,6 +3482,8 @@ export class ChatwootService {
             instance,
             body,
             'WAID:' + body.key.id,
+            undefined,
+            { pd_anuncio: { ...pdAnuncio, adjunto: 0 } },
           );
 
           if (!send) {
