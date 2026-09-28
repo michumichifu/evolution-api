@@ -2415,6 +2415,7 @@ export class ChatwootService {
       thumbnailUrl: string;
       sourceUrl: string;
       greetingMessageBody?: string;
+      sourceId?: string;
     }
 
     const adsMessage: AdsMessage | undefined = {
@@ -2429,6 +2430,9 @@ export class ChatwootService {
         msg.contextInfo?.externalAdReply?.thumbnailUrl,
       sourceUrl:
         msg.extendedTextMessage?.contextInfo?.externalAdReply?.sourceUrl || msg.contextInfo?.externalAdReply?.sourceUrl,
+      // PD (28 sep 2026): el id del anuncio, para buscar su miniatura en otro mensaje si esta no baja.
+      sourceId:
+        msg.extendedTextMessage?.contextInfo?.externalAdReply?.sourceId || msg.contextInfo?.externalAdReply?.sourceId,
     };
 
     return adsMessage;
@@ -3495,17 +3499,46 @@ export class ChatwootService {
           // CDN de Facebook (`AggregateError`) dejaba la tarjeta sin imagen, y la misma URL bajaba bien
           // minutos después. Un 4xx no se reintenta: Meta a veces manda un enlace que su propio CDN
           // rechaza con 400 aunque no haya caducado, y ese no se arregla esperando.
-          let imgBuffer: any = null;
-          for (let intento = 1; adsMessage.thumbnailUrl && intento <= 3 && !imgBuffer; intento++) {
+          const bajarMiniatura = async (url: string) => {
+            for (let intento = 1; intento <= 3; intento++) {
+              try {
+                return await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
+              } catch (error) {
+                const estado = error?.response?.status;
+                this.logger.warn(
+                  `miniatura del anuncio no disponible (intento ${intento}${estado ? `, HTTP ${estado}` : ''}): ${error}`,
+                );
+                if (estado && estado < 500) return null;
+                if (intento < 3) await new Promise((r) => setTimeout(r, 1500 * intento));
+              }
+            }
+            return null;
+          };
+          let imgBuffer: any = adsMessage.thumbnailUrl ? await bajarMiniatura(adsMessage.thumbnailUrl) : null;
+
+          // PD (28 sep 2026): plan B, la miniatura de OTRO mensaje del mismo anuncio (`sourceId`). El enlace
+          // que rechaza el CDN es de otro tipo (`/o1/v/t4/…`) y le tocó a 2 de 15 clics del 27 sep, todos del
+          // mismo anuncio que en los demás mensajes traía un enlace normal que sí baja.
+          if (!imgBuffer && adsMessage.sourceId) {
             try {
-              imgBuffer = await axios.get(adsMessage.thumbnailUrl, { responseType: 'arraybuffer', timeout: 10000 });
+              const otros = await this.prismaRepository.message.findMany({
+                where: {
+                  instanceId: instance.instanceId,
+                  contextInfo: { path: ['externalAdReply', 'sourceId'], equals: adsMessage.sourceId },
+                },
+                orderBy: { messageTimestamp: 'desc' },
+                select: { contextInfo: true },
+                take: 10,
+              });
+              const urls = otros
+                .map((m: any) => m.contextInfo?.externalAdReply?.thumbnailUrl)
+                .filter((url, i, lista) => url && url !== adsMessage.thumbnailUrl && lista.indexOf(url) === i);
+              for (const url of urls.slice(0, 3)) {
+                imgBuffer = await bajarMiniatura(url);
+                if (imgBuffer) break;
+              }
             } catch (error) {
-              const estado = error?.response?.status;
-              this.logger.warn(
-                `miniatura del anuncio no disponible (intento ${intento}${estado ? `, HTTP ${estado}` : ''}): ${error}`,
-              );
-              if (estado && estado < 500) break;
-              if (intento < 3) await new Promise((r) => setTimeout(r, 1500 * intento));
+              this.logger.warn(`miniatura del anuncio: sin plan B: ${error}`);
             }
           }
 
