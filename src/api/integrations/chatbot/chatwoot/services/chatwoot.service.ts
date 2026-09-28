@@ -3491,13 +3491,22 @@ export class ChatwootService {
             mensaje: bodyMessage || '',
           };
 
+          // PD (28 sep 2026): la miniatura se reintenta. Con un solo intento, un corte momentáneo con el
+          // CDN de Facebook (`AggregateError`) dejaba la tarjeta sin imagen, y la misma URL bajaba bien
+          // minutos después. Un 4xx no se reintenta: Meta a veces manda un enlace que su propio CDN
+          // rechaza con 400 aunque no haya caducado, y ese no se arregla esperando.
           let imgBuffer: any = null;
-          try {
-            if (adsMessage.thumbnailUrl) {
-              imgBuffer = await axios.get(adsMessage.thumbnailUrl, { responseType: 'arraybuffer' });
+          for (let intento = 1; adsMessage.thumbnailUrl && intento <= 3 && !imgBuffer; intento++) {
+            try {
+              imgBuffer = await axios.get(adsMessage.thumbnailUrl, { responseType: 'arraybuffer', timeout: 10000 });
+            } catch (error) {
+              const estado = error?.response?.status;
+              this.logger.warn(
+                `miniatura del anuncio no disponible (intento ${intento}${estado ? `, HTTP ${estado}` : ''}): ${error}`,
+              );
+              if (estado && estado < 500) break;
+              if (intento < 3) await new Promise((r) => setTimeout(r, 1500 * intento));
             }
-          } catch (error) {
-            this.logger.warn(`miniatura del anuncio no disponible: ${error}`);
           }
 
           const extension = imgBuffer && mimeTypes.extension(String(imgBuffer.headers['content-type']));
