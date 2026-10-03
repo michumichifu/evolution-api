@@ -85,6 +85,13 @@ export class InstanceRouter extends RouterBroker {
 
         return res.status(HttpStatus.OK).json(response);
       })
+      // PD 2026-10-03: pide a Meta, ahora, el estado de las instancias Cloud API (todas o
+      // `{instanceNames}`). Lo mismo que el chequeo de cada 30 min. Ver salud-meta.service.ts.
+      .post('/metaHealth', ...guards, async (req, res) => {
+        const response = await instanceController.checkMetaHealth(req.body ?? {});
+
+        return res.status(HttpStatus.OK).json(response);
+      })
       .post(this.routerPath('setPresence'), ...guards, async (req, res) => {
         const response = await this.dataValidate<null>({
           request: req,

@@ -16,6 +16,7 @@ import { TemplateController } from './controllers/template.controller';
 import { ChannelController } from './integrations/channel/channel.controller';
 import { EvolutionController } from './integrations/channel/evolution/evolution.controller';
 import { MetaController } from './integrations/channel/meta/meta.controller';
+import { SaludMetaService } from './integrations/channel/meta/salud-meta.service';
 import { BaileysController } from './integrations/channel/whatsapp/baileys.controller';
 import { ChatbotController } from './integrations/chatbot/chatbot.controller';
 import { ChatwootController } from './integrations/chatbot/chatwoot/controllers/chatwoot.controller';
@@ -87,6 +88,9 @@ export const chatwootController = new ChatwootController(chatwootService, config
 const settingsService = new SettingsService(waMonitor);
 export const settingsController = new SettingsController(settingsService);
 
+// PD 2026-10-03: el estado real de cada número de Cloud API según Meta (ver salud-meta.service.ts).
+export const saludMeta = new SaludMetaService(prismaRepository, configService);
+
 export const instanceController = new InstanceController(
   waMonitor,
   configService,
@@ -99,6 +103,7 @@ export const instanceController = new InstanceController(
   chatwootCache,
   baileysCache,
   providerFiles,
+  saludMeta,
 );
 export const sendMessageController = new SendMessageController(waMonitor);
 export const callController = new CallController(waMonitor);

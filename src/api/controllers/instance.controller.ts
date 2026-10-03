@@ -1,4 +1,6 @@
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { motivoMeta } from '@api/integrations/channel/meta/salud-meta';
+import { SaludMetaService } from '@api/integrations/channel/meta/salud-meta.service';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -40,6 +42,8 @@ export class InstanceController {
     private readonly chatwootCache: CacheService,
     private readonly baileysCache: CacheService,
     private readonly providerFiles: ProviderFiles,
+    // PD 2026-10-03: el estado de Meta de las Cloud API, aparte de `connectionStatus`.
+    private readonly saludMeta?: SaludMetaService,
   ) {}
 
   private readonly logger = new Logger('InstanceController');
@@ -505,6 +509,17 @@ export class InstanceController {
     });
 
     const results = [];
+    let huboMeta = false;
+    const resumenMeta = (
+      m: { metaStatus: string | null; metaCheckedAt: string | null; metaAttemptError: string | null } | null,
+    ) =>
+      m
+        ? {
+            metaStatus: m.metaStatus,
+            metaCheckedAt: m.metaCheckedAt,
+            metaMotivo: motivoMeta(m.metaStatus, m.metaAttemptError),
+          }
+        : undefined;
     for (const inst of instances) {
       const service = this.waMonitor.waInstances[inst.name];
       if (!service) continue;
@@ -515,9 +530,19 @@ export class InstanceController {
       let nameStatus: string | null = null;
       // What WhatsApp returned for a QR account: the profile name and the business name.
       let whatsapp: { pushName?: string | null; verifiedName?: string | null } | null = null;
+      // PD 2026-10-03: el estado del número en Meta (solo Cloud API).
+      let meta: { metaStatus: string | null; metaCheckedAt: string | null; metaAttemptError: string | null } | null =
+        null;
 
       try {
         if (inst.integration === Integration.WHATSAPP_BUSINESS) {
+          // PD 2026-10-03: «Actualizar» también repasa el estado del número en Meta (y lo guarda
+          // aparte, ver salud-meta.service.ts). Va antes: si Meta ya no deja ver el número, la
+          // consulta del perfil de abajo falla, y así queda dicho por qué.
+          if (this.saludMeta) {
+            meta = await this.saludMeta.comprobarInstancia(inst);
+            huboMeta = true;
+          }
           const { URL: base, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
           const graph = async (path: string) => {
             const res = await fetch(`${base}/${VERSION}/${path}`, {
@@ -569,14 +594,24 @@ export class InstanceController {
           pictureChanged,
           nameStatus,
           whatsapp,
+          meta: resumenMeta(meta),
           before,
           after: { profileName, profilePicUrl },
         });
       } catch (error) {
         this.logger.error(`Could not refresh the profile of "${inst.name}": ${error?.message ?? error}`);
-        results.push({ instanceName: inst.name, updated: false, error: error?.message ?? String(error), before });
+        results.push({
+          instanceName: inst.name,
+          updated: false,
+          error: error?.message ?? String(error),
+          meta: resumenMeta(meta),
+          before,
+        });
       }
     }
+
+    // El archivo del estado de Meta se escribe una vez, al final.
+    if (huboMeta) this.saludMeta?.persistir();
 
     return { results, updated: results.filter((r) => r.updated).length, requested: results.length };
   }
@@ -596,19 +631,46 @@ export class InstanceController {
       if (instancesByKey.length > 0) {
         const names = instancesByKey.map((instance) => instance.name);
 
-        return this.waMonitor.instanceInfo(names);
+        return this.conEstadoMeta(await this.waMonitor.instanceInfo(names));
       } else {
         throw new UnauthorizedException();
       }
     }
 
     if (instanceId || number) {
-      return this.waMonitor.instanceInfoById(instanceId, number);
+      return this.conEstadoMeta(await this.waMonitor.instanceInfoById(instanceId, number));
     }
 
     const instanceNames = instanceName ? [instanceName] : null;
 
-    return this.waMonitor.instanceInfo(instanceNames);
+    return this.conEstadoMeta(await this.waMonitor.instanceInfo(instanceNames));
+  }
+
+  /**
+   * PD 2026-10-03: las Cloud API salían «open» siempre (no tienen socket). Se les añade lo que
+   * dijo Meta en el último chequeo y, si el número no funciona, `connectionStatus: 'close'` EN LA
+   * RESPUESTA (lo guardado viaja en `connectionStatusGuardado`). 🔴 No se escribe en la base ni
+   * en `stateConnection`: eso cambiaría la carga al arrancar y el borrado por `DEL_INSTANCE`.
+   */
+  private conEstadoMeta<T>(filas: T): T {
+    if (!this.saludMeta || !Array.isArray(filas)) return filas;
+    return this.saludMeta.anotar(filas as any[]) as unknown as T;
+  }
+
+  /**
+   * PD 2026-10-03: `POST /instance/metaHealth` — pide a Meta, ahora, el estado de las instancias
+   * Cloud API (todas, o `{instanceNames: [...]}`) y devuelve lo que guardó. Lo mismo que hace el
+   * chequeo cada 30 min. Un fallo de red sale como «sin comprobar», nunca como desconectada.
+   */
+  public async checkMetaHealth({ instanceNames }: { instanceNames?: string[] }) {
+    if (!this.saludMeta) return { results: [], requested: 0 };
+    const results = (await this.saludMeta.comprobar(instanceNames)).map((e) => ({
+      ...e,
+      // `profilePicUrl` lleva firma y caducidad: no hace falta en este informe.
+      profilePicUrl: undefined,
+      metaMotivo: motivoMeta(e.metaStatus, e.metaAttemptError),
+    }));
+    return { results, requested: results.length };
   }
 
   public async setPresence({ instanceName }: InstanceDto, data: SetPresenceDto) {

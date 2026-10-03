@@ -33,7 +33,9 @@ export async function instanceExistsGuard(req: Request, _: Response, next: NextF
     req.originalUrl.includes('/instance/fetchInstances') ||
     req.originalUrl.includes('/instance/restorableSessions') ||
     req.originalUrl.includes('/instance/restoreSessions') ||
-    req.originalUrl.includes('/instance/refreshProfiles')
+    req.originalUrl.includes('/instance/refreshProfiles') ||
+    // PD 2026-10-03: `metaHealth`, la misma trampa por tercera vez (sin esto, 400).
+    req.originalUrl.includes('/instance/metaHealth')
   ) {
     return next();
   }

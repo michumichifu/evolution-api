@@ -6,7 +6,7 @@ import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
 import { HttpStatus, router } from '@api/routes/index.router';
 import { buildLicenseRouter } from '@api/routes/license.router';
-import { eventManager, waMonitor } from '@api/server.module';
+import { eventManager, saludMeta, waMonitor } from '@api/server.module';
 import {
   Auth,
   configService,
@@ -31,6 +31,8 @@ import { join } from 'path';
 
 async function initWA() {
   await waMonitor.loadInstance();
+  // PD 2026-10-03: el estado real de los números de Cloud API en Meta (a los 20 s y cada 30 min).
+  saludMeta.iniciar();
 }
 
 async function bootstrap() {
