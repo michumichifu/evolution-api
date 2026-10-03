@@ -1,5 +1,5 @@
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
-import { motivoMeta } from '@api/integrations/channel/meta/salud-meta';
+import { metaDesconectado, motivoMeta } from '@api/integrations/channel/meta/salud-meta';
 import { SaludMetaService } from '@api/integrations/channel/meta/salud-meta.service';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
@@ -517,6 +517,7 @@ export class InstanceController {
         ? {
             metaStatus: m.metaStatus,
             metaCheckedAt: m.metaCheckedAt,
+            metaConnected: m.metaStatus ? !metaDesconectado(m.metaStatus) : null,
             metaMotivo: motivoMeta(m.metaStatus, m.metaAttemptError),
           }
         : undefined;
@@ -668,6 +669,7 @@ export class InstanceController {
       ...e,
       // `profilePicUrl` lleva firma y caducidad: no hace falta en este informe.
       profilePicUrl: undefined,
+      metaConnected: e.metaStatus ? !metaDesconectado(e.metaStatus) : null,
       metaMotivo: motivoMeta(e.metaStatus, e.metaAttemptError),
     }));
     return { results, requested: results.length };
