@@ -31,6 +31,7 @@ compila y se despliega. **Nunca se edita el `dist` del servidor a mano** (ya pas
 | `feat(chatwoot): el estado de entrega (entregado, leído, fallido) llega a Chatwoot` (`37ea5132`, 27 sep 2026) | 🔴 **Nada de lo enviado desde Chatwoot pasaba de «enviado».** Las bandejas son de tipo API, y ahí Chatwoot pinta el check con el `status` del mensaje, que pone el sistema externo; Evolution guardaba los estados (de Meta en Cloud API y de WhatsApp por QR) en `MessageUpdate` y **no se los pasaba**. `actualizarEstadoEnChatwoot()` los manda por la **API oficial** (`PATCH /api/v1/accounts/:a/conversations/:c/messages/:m`, `{status}` y `external_error` si falla; solo bandejas API), desde el manejo de `statuses` de la Cloud API y desde `messages.update` de Baileys. Mapa: `DELIVERY_ACK`/`DELIVERED` → delivered, `READ`/`PLAYED` → read, `FAILED`/`ERROR` → failed; «sent» no se manda, y Chatwoot no deja bajar de read a delivered. Si el enlace aún no existe (el primer aviso llega antes de que se enlace lo enviado desde Chatwoot), reintenta a los 3 s. Y lo enviado por la **API de Evolution** guarda ahora `chatwootMessageId`/`ConversationId` (se espera a Chatwoot, con tope de 20 s), para recibir también su estado. 🔴 **NO es el `Error updating Chatwoot message source ID: ENOTFOUND host`**, que sigue: ese sale de la conexión directa a la base de Chatwoot (`CHATWOOT_IMPORT_DATABASE_CONNECTION_URI` sin poner, usa la de ejemplo con host `host`); arreglarlo enciende de verdad `importContacts`, `importMessages` y el cron `syncLostMessages`, que duplicaría lo enviado desde Chatwoot sin `WAID`. **No hace falta para los checks.** Probado a mano: `PATCH` → 200 y el 419556 pasó a `read`. Respaldo: `/root/dist-parcheado-respaldo-20260927-pre-estados.tgz`. |
 | `fix: comandos del bot sin enviar al paciente, y notas de voz ogg por Cloud API` (`226eb28d`, 27 sep 2026) | 🔴 **Un comando del bot escrito en Chatwoot le llegaba al paciente** desde que la bandeja 82 entrega por Evolution. Luis: *«originalmente uno escribe en la conversación y se activaba o desactivaba y no le salía al paciente en su WhatsApp»*. `receiveWebhook` ya no envía un saliente que es **solo** un comando (`/^\s*#[a-z0-9áéíóúñ-]+(\s+\+?[\d\s-]{7,20})?\s*$/i`, sin adjuntos): `#pausa`, `#pausa 18091234567`, `#lista`… sí; «Hola #pausa» o «el #martes», no. El flujo lo sigue leyendo por el webhook de cuenta. Vale para todas las instancias. **Notas de voz por Cloud API:** `processAudio` subía todo audio en base64 como `.mp3` **y sin tipo** (el `mimetype` se ponía después de subirlo); un ogg (base64 que empieza por `T2dnUw`) va ahora como `audio/ogg` y el envío lleva **`voice: true`** (nota de voz de verdad: micrófono, foto, descarga automática y transcripción; doc de Meta «Audio messages»). Y `getBase64FromMediaMessage` acepta `mimetype` además de `mime_type`: sin eso la nota enviada llegaba a Chatwoot sin tipo. Respaldo: `/root/dist-parcheado-respaldo-20260927-pre-voz-comandos.tgz`. |
 | `feat(chatwoot): el anuncio viaja en pd_anuncio para que el fork lo pinte como en WhatsApp` (`f896a03f`, 27 sep 2026) | Luis quiere la tarjeta **en el orden del teléfono**: rótulo «Mensaje a partir de un anuncio», la tarjeta del anuncio y, debajo, el mensaje. Chatwoot no deja ordenar imagen y texto dentro de un mensaje, así que el anuncio viaja además en **`content_attributes.pd_anuncio`** (`red`, `titulo`, `texto`, `enlace`, `bienvenida`, `mensaje`, `adjunto`) y **el fork de Chatwoot lo pinta** (`WhatsappAnuncio.vue`, `a064c733c` de `chatwoot-pd`), igual que `pd_interactivo`. El `content` sigue llevando todo en texto, ya en ese orden, para el correo de aviso, el buscador y cualquier cliente que no sea el fork. `sendData` acepta atributos propios (`atributosExtra`) y `createMessage` el anuncio (caso sin imagen). |
+| `feat(cloud-api): el estado real del número según Meta, aparte de connectionStatus` (`121df539` + `ff64f8da`) y `…qué tipo de desconexión fue, desde cuándo, y los avisos de cuenta de Meta` (`6232c833`), 3 oct 2026; pruebas en `1bfbdd81` y `6232c833` | 🔴 **Una instancia Cloud API salía «Conectado» SIEMPRE**: `BusinessStartupService.stateConnection` es `{ state: 'open' }` fijo. «Zenithe 2 - Cloud Api» llevaba desde el 30 sep 23:18 RD **fuera de internet** en el Business Manager y con la app sin acceso (Graph: code 100, subcode 33), y nadie se enteró en dos días. Luis: *«tiene que indicar realmente que esa instancia está desconectada, no aparecer conectado como sale actualmente»*. Ahora el backend le pregunta a Meta por cada número (`salud-meta.ts` + `salud-meta.service.ts`), guarda el resultado **aparte** y `fetchInstances` lo devuelve. **Todo en el apartado de abajo**, «El estado real de una Cloud API según Meta». ⏳ **Sin desplegar** (rama `pd/estado-cloud-api`). |
 
 ## 🔴 EL 8 DE SEPTIEMBRE DE 2026 HABÍA DOS PARCHES SOLO EN EL SERVIDOR
 
@@ -94,6 +95,12 @@ qué bundle sirve producción**, no que el `rsync` termine bien.
 ssh root@89.117.73.129 'find /opt/evolution-api/dist-parcheado -type f | wc -l'   # 803
 find dist -type f | wc -l                                                        # 803
 ```
+
+🆕 **3 oct 2026:** el compilado de `deploy/parches-pd` daba **807** en local; el de la rama del estado
+de Meta da **815**: **8 archivos nuevos y esperados** (`salud-meta` y `salud-meta.service`, cada uno
+en `.js`, `.mjs` y sus `.map`). 🔴 `tsup` compila **todo `src/`** al `dist`: un archivo nuevo en
+`src/` siempre sube la cuenta, y por eso las pruebas viven en `pruebas-pd/` (y no en `test/`, que
+está en el `.gitignore` de aguas arriba).
 
 🔴 **OJO AL ACTUALIZAR EVOLUTION DE VERSIÓN:** ese montaje **tapa el backend de la imagen nueva y
 nada avisa**. Al subir de versión hay que **rehacer esta rama sobre el tag nuevo** (o quitar la línea
@@ -334,7 +341,11 @@ red de seguridad**: esconde el fallo y también la alternativa.
 
 ⚠️ **Y una cosa más, anotada aunque no se tocó:** para preguntarle el perfil a Meta, **el Manager
 manda el token de la instancia desde el navegador del usuario**. Funciona, pero esa consulta la
-haría mejor el servidor.
+haría mejor el servidor. 🆕 **3 oct 2026: la tarjeta ya no lo hace** —nombre, foto, número visible y
+estado llegan del backend en `fetchInstances` (apartado «El estado real de una Cloud API según
+Meta»)—. ⚠️ **Queda una:** el formulario de **crear** una instancia Cloud API
+(`NewInstance.tsx`) sigue preguntándole a Graph desde el navegador con el token que se acaba de
+escribir ahí mismo.
 
 ---
 
@@ -639,3 +650,132 @@ agencia de gestión de campañas publicitarias»*, y **RD y Venezuela no están*
 **El relato completo, con fuentes y con lo que queda disponible (WhatsApp Flows), está en la carpeta
 de la agencia:** `Documentacion/INCIDENCIA - Los mensajes fuera de la ventana de 24 h no salen y
 Evolution los da por enviados (8 sep 2026).md`, apartado 16.
+
+## 🆕 El estado real de una Cloud API según Meta (3 oct 2026)
+
+### El caso
+
+«Zenithe 2 - Cloud Api» (phone_number_id `1219661531237557`, WABA `1241246318075956`) salía
+**«Conectado»** en el Manager mientras el número llevaba desde el **30 sep a las 23:18 RD** «Fuera de
+internet» en el Business Manager de Zenithe y la app «Cloud API - PD» había perdido el acceso: Graph
+contestaba `GraphMethodException`, **code 100, subcode 33** («Object with ID … does not exist, cannot
+be loaded due to missing permissions…») y los envíos, `Unsupported post request`. **Nadie se enteró en
+dos días.** Causa probable: coexistencia sin actividad en la app del teléfono. Luis: *«tiene que
+indicar realmente que esa instancia está desconectada, no aparecer conectado como sale
+actualmente»*. Y después: que diga **a futuro qué tipo de desconexión fue** (intencional o sola).
+
+La raíz: una instancia `WHATSAPP-BUSINESS` no tiene socket, y
+`BusinessStartupService.stateConnection` es `{ state: 'open' }` **fijo** (línea 48 de
+`whatsapp.business.service.ts`). Nada le preguntaba nunca a Meta.
+
+### Qué hace ahora
+
+- **`src/api/integrations/channel/meta/salud-meta.ts`** (sin estado, probado con Graph simulado):
+  `GET {WA_BUSINESS.URL}/{VERSION}/{number}?fields=status,display_phone_number,verified_name,quality_rating,name_status,new_name_status`
+  con el token de la instancia, y si contesta, la foto. Lectura: **190 → `TOKEN_INVALID`**;
+  **100/33, 10 y 200-299 → `NO_ACCESS`**; red, timeout, 5xx y límites (1, 2, 4, 17, 32, 613…) →
+  **«sin comprobar»** (nunca «desconectado»); otro error → no concluye nada. Del `status` de Meta,
+  `CONNECTED`, `FLAGGED`, `RATE_LIMITED` y `UNKNOWN` cuentan como que funciona (los tres últimos con
+  aviso ámbar); **cualquier otro, como caído**. Los textos en español salen de aquí (`motivoMeta`).
+- **`salud-meta.service.ts`** guarda por instancia: `metaStatus`, `metaCheckedAt` (última respuesta
+  concluyente), `metaError`, **`metaGraphError` (code, error_subcode, type, message, fbtrace_id)**,
+  `displayPhone`, `verifiedName`, `qualityRating`, `nameStatus`, `newNameStatus`, la foto,
+  **`metaFailingSince`** (el primer chequeo que lo vio caído en esta racha), **`metaLastOkAt`**, el
+  último intento fallido y un **historial de 30 entradas** (cambios de estado con el código anterior
+  y el nuevo, y avisos de cuenta). Un timeout conserva el último dato concluyente.
+- **Cuándo:** a los 20 s de arrancar y cada **30 min** (`PD_SALUD_META_MINUTOS`; `0` lo apaga), en
+  `POST /instance/refreshProfiles` (el «Actualizar» del Manager), al llegar un aviso de cuenta (como
+  mucho uno cada 5 min por instancia) y a demanda con **`POST /instance/metaHealth`**
+  (`{instanceNames?: [...]}`, clave global; añadida a `instanceExistsGuard`, la trampa de siempre).
+- **`fetchInstances`** devuelve en cada Cloud API: `metaStatus`, `metaCheckedAt`, `metaError`,
+  `metaGraphError`, `metaCodigo` («100/33», «190» o el `status`), `metaConnected`, `metaMotivo`,
+  `metaFailingSince`, `metaLastOkAt`, `metaAttemptAt`, `metaAttemptError`, `displayPhone`,
+  `metaVerifiedName`, `metaQualityRating`, `metaNameStatus`, `metaNewNameStatus`,
+  `metaProfilePicUrl`, `metaHistorial` (las 10 últimas) y `metaUltimoAviso`. **Y si Meta dice que el
+  número no funciona y lo guardado es `open`, `connectionStatus` sale `close` EN LA RESPUESTA**, con lo
+  guardado en `connectionStatusGuardado`.
+
+### 🔴 Las dos trampas, y por qué esto no las pisa
+
+1. **Al arrancar, `monitor.service.ts` (línea 297) solo auto-conecta las instancias guardadas
+   `open`/`connecting`.** Si el estado de Meta se escribiera en `Instance.connectionStatus`, una
+   Cloud API caída no se cargaría tras un reinicio y **los webhooks de Meta se perderían el día que el
+   número vuelva**. Por eso el servicio **no escribe en la base** (la prueba usa una base falsa que
+   solo sabe leer: cualquier `update` revienta) y el `close` vive solo en la respuesta.
+2. **`delInstanceTime` (línea 57) borra la instancia que no esté `open` EN MEMORIA** pasado
+   `DEL_INSTANCE` (solo se programa al crearla). El chequeo **no toca `stateConnection`**, así que no
+   puede disparar ningún borrado. `connectionState`, `connect`, `logout` y `delete` siguen viendo
+   `open` como siempre.
+3. (Tercera, del montaje) **No se añadió ninguna columna**: el contenedor regenera el cliente de
+   Prisma con el esquema **de la imagen oficial** (`deploy_database.sh` → `db:generate`), no con el
+   de este repo. Se guarda en **`INSTANCE_DIR/pd-salud-meta.json`** (el volumen de instancias; mismo
+   sitio que `.respaldos-pd`), que sobrevive a `docker restart`.
+
+### Qué cambia para quien lee `fetchInstances`
+
+- **El Manager**: ver su `DESPLIEGUE-PD.md` (la tarjeta sale «Desconectado» con el motivo).
+- **Panel Dental** (`backend/app/modules/agency_whatsapp/instances.py`): lee
+  `connectionStatus` → `normalize_state` → `close` pasa a **`disconnected`**, guarda
+  `last_disconnected_at` y lo enseña. **No desafilia**: eso solo pasa con el 404 «instance does not
+  exist» de `connectionState` (`is_instance_not_found`), que no cambia. Su explicación de un envío
+  fallido usa `connectionState`, que para una Cloud API sigue diciendo `open`.
+- **evo-watch** lee el estado **de la base** por `psql`, no de `fetchInstances`: no le afecta.
+- ⚠️ **Los flujos de n8n que lean `fetchInstances` no se pudieron revisar** (el MCP de n8n daba 502
+  el 3 oct): si alguno mira `connectionStatus` de una Cloud API, ahora puede ver `close`.
+
+### Los avisos de cuenta de Meta (webhooks sin número)
+
+El caso real: el último webhook del número (30 sep 23:18:44 RD) fue un `sent/delivered` normal y
+luego silencio. **Y si hubiera llegado un aviso de cuenta, se habría perdido:**
+`MetaController.receiveWebhook` leía `entry.changes[0].value.metadata.phone_number_id`, y un
+`account_update` no trae `metadata`: reventaba con *«Cannot read properties of undefined (reading
+'phone_number_id')»*, que solo dejaba un `unhandledRejection` en el log (la prueba lo reproduce
+quitando el arreglo). Ahora `apuntarAvisosDeCuenta` registra `account_update`, `account_alerts`,
+`account_review_update`, `phone_number_quality_update`, `phone_number_name_update`,
+`business_capability_update` y `security` en el historial de las instancias de ese WABA (`entry.id`
+o `waba_info.waba_id`) o número (`entity_id`), con una línea en el log y el `value` entero. Lo que
+trae número (mensajes y estados) **sigue igual**.
+
+🔴 **El dato que contesta «¿sola o intencional?»** es `account_update` → **`PARTNER_REMOVED`** con
+`disconnection_info.reason` (`PRIMARY_INACTIVITY` = teléfono principal sin actividad ~14 días,
+`COMPANION_INACTIVITY`, `BUSINESS_DOWNGRADE`, `CHANGE_NUMBER`, `USER_RE_REGISTERED`,
+`ACCOUNT_DISCONNECTED`) e `initiated_by` (`SYSTEM` o `USER`). Según la doc de Meta solo viene
+**«cuando la empresa usaba a la vez la app de WhatsApp Business y la Cloud API»** (coexistencia).
+Además `ACCOUNT_OFFBOARDED` / `ACCOUNT_RECONNECTED`. Fuente:
+`developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/account_update.md`
+(descargada el 3 oct 2026).
+
+🔴 **Para recibirlos hay que suscribir esos campos en la app** (App Dashboard → WhatsApp →
+Configuración → campos del webhook; doc `…/webhooks/overview.md`). **Y `account_update`,
+`account_review_update` y `account_alerts` NO admiten `override_callback_uri`**: Meta los manda
+**siempre a la URL de callback de la APP** (doc `…/webhooks/override.md`). Si esa URL no es
+`/webhook/meta` de Evolution, no llegan aquí aunque estén suscritos. ⏳ **No se ha comprobado qué
+campos tiene suscritos la app ni su URL**: eso es mirar el panel de la app (o Graph), y en esta tanda
+no se llamó a Meta.
+
+⚠️ **`/webhook/meta` no verifica la firma de Meta (`X-Hub-Signature-256`)**: cualquiera puede mandar
+un aviso falso, que quedaría en el historial. Por eso un aviso solo dispara un chequeo cada 5 min por
+instancia, y **el estado que manda es siempre el que contesta Graph**, no el aviso.
+
+### Las pruebas
+
+```bash
+npx tsx --test pruebas-pd/salud-meta.test.ts      # 19 pruebas, Graph y base simulados
+```
+
+Viven en `pruebas-pd/` porque `tsup` compila **todo `src/`** al `dist` y `test/` está en el
+`.gitignore` de aguas arriba. Cada arreglo se comprobó **quitándolo**: sin la lectura de 100/33 falla
+una; sin el `close` en la respuesta, dos; sin la guarda del webhook, la del controlador, con el error
+literal de producción.
+
+### Al desplegar, qué mirar
+
+1. `find dist -type f | wc -l` → **815** (807 + 8 de `salud-meta*`), y lo mismo en el servidor tras
+   el `rsync`.
+2. Tras el reinicio, a los 20 s, en el log: `Meta: "Zenithe 2 - Cloud Api" pasa de (sin comprobar) a
+   NO_ACCESS — …subcode 33` (si sigue caído) y una línea por cada Cloud API.
+3. `ls -la /evolution/instances/pd-salud-meta.json` **dentro del contenedor**: existe y crece.
+4. `curl … /instance/fetchInstances` con la clave global: Zenithe 2 con `connectionStatus: "close"`,
+   `connectionStatusGuardado: "open"`, `metaCodigo: "100/33"`; las demás Cloud API con `metaStatus`.
+5. **La base sigue diciendo `open`** para Zenithe 2 (`select name, "connectionStatus" from "Instance"`):
+   si dijera `close`, algo escribió donde no debía.
