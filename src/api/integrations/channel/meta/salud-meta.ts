@@ -49,7 +49,41 @@ export interface ResultadoSaludMeta {
   profilePicUrl?: string | null;
   /** El error tal cual lo dio Graph (o la red), para enseñarlo y para el log. */
   error?: string | null;
+  /**
+   * PD 2026-10-03 (Luis: que diga a futuro QUÉ TIPO de desconexión fue): el error de Graph
+   * COMPLETO y estructurado, no solo su texto. `null` si no hubo error de Graph (o fue la red).
+   */
+  graphError?: ErrorGraphCompleto | null;
   httpStatus?: number | null;
+}
+
+/** Los cinco campos del error de Graph que sirven para saber qué pasó (y para pedir soporte a Meta). */
+export interface ErrorGraphCompleto {
+  code: number | null;
+  error_subcode: number | null;
+  type: string | null;
+  message: string | null;
+  fbtrace_id: string | null;
+}
+
+export function errorGraphCompleto(e: ErrorGraph | undefined | null): ErrorGraphCompleto | null {
+  if (!e || typeof e !== 'object') return null;
+  return {
+    code: typeof e.code === 'number' ? e.code : null,
+    error_subcode: typeof e.error_subcode === 'number' ? e.error_subcode : null,
+    type: e.type ?? null,
+    message: e.message ?? null,
+    fbtrace_id: e.fbtrace_id ?? null,
+  };
+}
+
+/**
+ * El código corto que va a la vista: «100/33», «190» o el `status` de Meta («DISCONNECTED»).
+ * `null` si no se sabe nada.
+ */
+export function codigoMeta(metaStatus: string | null | undefined, g?: ErrorGraphCompleto | null): string | null {
+  if (g?.code != null) return g.error_subcode != null ? `${g.code}/${g.error_subcode}` : String(g.code);
+  return metaStatus || null;
 }
 
 export interface OpcionesConsultaMeta {
@@ -80,19 +114,20 @@ function textoError(e: ErrorGraph | undefined, httpStatus: number | null): strin
 /** Lee un error de Graph y dice qué significa. Separado para poder probarlo solo. */
 export function clasificarErrorGraph(e: ErrorGraph | undefined, httpStatus: number | null): ResultadoSaludMeta {
   const error = textoError(e, httpStatus);
+  const graphError = errorGraphCompleto(e);
   const code = e?.code;
-  if (code === 190) return { tipo: 'token_invalido', metaStatus: 'TOKEN_INVALID', error, httpStatus };
+  if (code === 190) return { tipo: 'token_invalido', metaStatus: 'TOKEN_INVALID', error, graphError, httpStatus };
   if (
     (code === 100 && e?.error_subcode === 33) || // «Object with ID … does not exist, cannot be loaded due to missing permissions»
     code === 10 || // permiso denegado
     (code >= 200 && code <= 299) // permisos de la app
   ) {
-    return { tipo: 'sin_acceso', metaStatus: 'NO_ACCESS', error, httpStatus };
+    return { tipo: 'sin_acceso', metaStatus: 'NO_ACCESS', error, graphError, httpStatus };
   }
   if ((code != null && CODIGOS_PASAJEROS.has(code)) || (httpStatus != null && httpStatus >= 500) || !e) {
-    return { tipo: 'sin_comprobar', metaStatus: null, error, httpStatus };
+    return { tipo: 'sin_comprobar', metaStatus: null, error, graphError, httpStatus };
   }
-  return { tipo: 'error_graph', metaStatus: null, error, httpStatus };
+  return { tipo: 'error_graph', metaStatus: null, error, graphError, httpStatus };
 }
 
 async function pedirJson(
@@ -222,4 +257,74 @@ export function motivoMeta(metaStatus: string | null | undefined, errorIntento?:
     default:
       return `Meta: estado ${metaStatus}`;
   }
+}
+
+/**
+ * PD 2026-10-03: los webhooks de CUENTA de Meta (no son mensajes). Hasta hoy Evolution los tiraba:
+ * `MetaController.receiveWebhook` leía `value.metadata.phone_number_id`, que estos no traen, y
+ * reventaba con un TypeError que acababa en el log como `unhandledRejection`.
+ *
+ * Los campos y sus valores están sacados de la doc de Meta (`…/whatsapp/webhooks/reference/<campo>.md`,
+ * descargada el 3 oct 2026). 🔴 Ninguno de estos admite `override_callback_uri`: Meta los manda
+ * SIEMPRE a la URL de callback de la APP.
+ */
+export const CAMPOS_AVISO_CUENTA = new Set([
+  'account_update',
+  'account_alerts',
+  'account_review_update',
+  'phone_number_quality_update',
+  'phone_number_name_update',
+  'business_capability_update',
+  'security',
+]);
+
+/** `disconnection_info.reason` de `account_update` → `PARTNER_REMOVED` (doc de Meta, en español). */
+const MOTIVOS_DESCONEXION: Record<string, string> = {
+  PRIMARY_INACTIVITY: 'teléfono principal sin actividad ~14 días',
+  COMPANION_INACTIVITY: 'dispositivo vinculado sin actividad ~30 días',
+  BUSINESS_DOWNGRADE: 'el número se registró en la app de WhatsApp normal',
+  CHANGE_NUMBER: 'el cliente cambió de número',
+  USER_RE_REGISTERED: 'se volvió a registrar en otro dispositivo',
+  ACCOUNT_DISCONNECTED: 'cuenta desconectada por sanción o borrada por el cliente',
+};
+
+/** `disconnection_info.initiated_by`: ¿se desconectó solo o lo hizo el cliente? */
+const QUIEN_DESCONECTA: Record<string, string> = {
+  SYSTEM: 'sola (Meta)',
+  USER: 'por el cliente',
+};
+
+/**
+ * Una línea en español con lo esencial de un aviso de cuenta: el campo, el evento y, si viene, el
+ * motivo de la desconexión y quién la inició. El `value` completo se guarda aparte.
+ */
+export function resumenAvisoCuenta(field: string, value: any): string {
+  const v = value ?? {};
+  const evento =
+    v.event ??
+    v.alert_info?.alert_type ??
+    v.decision ??
+    v.current_limit ??
+    v.max_daily_conversations_per_business ??
+    null;
+  const partes = [`${field}${evento ? `: ${evento}` : ''}`];
+  const d = v.disconnection_info;
+  if (d?.reason || d?.initiated_by) {
+    const motivo = d.reason ? (MOTIVOS_DESCONEXION[d.reason] ?? d.reason) : null;
+    const quien = d.initiated_by ? (QUIEN_DESCONECTA[d.initiated_by] ?? d.initiated_by) : null;
+    partes.push(`desconexión ${[quien, motivo].filter(Boolean).join(', ')}`);
+  }
+  if (v.ban_info?.waba_ban_state) partes.push(`bloqueo: ${v.ban_info.waba_ban_state}`);
+  if (Array.isArray(v.restriction_info) && v.restriction_info.length) {
+    partes.push(
+      `restricción: ${v.restriction_info
+        .map((r: any) => r?.restriction_type)
+        .filter(Boolean)
+        .join(', ')}`,
+    );
+  }
+  if (v.violation_info?.violation_type) partes.push(`infracción: ${v.violation_info.violation_type}`);
+  if (v.alert_info?.alert_severity) partes.push(`gravedad: ${v.alert_info.alert_severity}`);
+  if (v.display_phone_number) partes.push(`número ${v.display_phone_number}`);
+  return partes.join(' · ');
 }

@@ -24,7 +24,43 @@ import { INSTANCE_DIR } from '@config/path.config';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import { consultarSaludMeta, metaDesconectado, motivoMeta, ResultadoSaludMeta } from './salud-meta';
+import {
+  codigoMeta,
+  consultarSaludMeta,
+  ErrorGraphCompleto,
+  metaDesconectado,
+  motivoMeta,
+  ResultadoSaludMeta,
+  resumenAvisoCuenta,
+} from './salud-meta';
+
+/**
+ * Una entrada del historial de una instancia: un cambio de estado visto en un chequeo, o un aviso
+ * de cuenta que mandó Meta por webhook. La más nueva va primero; se guardan las últimas 30.
+ */
+export type EntradaHistorialMeta =
+  | {
+      tipo: 'estado';
+      at: string;
+      de: string | null;
+      a: string | null;
+      codigoDe: string | null;
+      codigoA: string | null;
+      error: string | null;
+    }
+  | {
+      tipo: 'aviso';
+      at: string;
+      /** `entry.time` del webhook (cuándo lo generó Meta), en ISO. */
+      metaAt: string | null;
+      field: string;
+      wabaId: string | null;
+      resumen: string;
+      /** El `value` del webhook tal cual (cortado a ~4 KB si fuera enorme). */
+      value: unknown;
+    };
+
+const MAX_HISTORIAL = 30;
 
 export interface EstadoMetaInstancia {
   instanceId: string;
@@ -46,15 +82,32 @@ export interface EstadoMetaInstancia {
   metaAttemptAt: string | null;
   /** Si el último intento no fue concluyente (red, timeout, 5xx…), por qué. */
   metaAttemptError: string | null;
+  /** El error de Graph de la última respuesta concluyente, con code/subcode/type/message/fbtrace_id. */
+  metaGraphError: ErrorGraphCompleto | null;
+  /**
+   * El PRIMER chequeo que lo vio caído en esta racha (se borra cuando vuelve). 🔴 Es cuándo lo
+   * vimos nosotros, no cuándo cayó: entre dos chequeos pasan hasta 30 min, y antes del despliegue
+   * no había chequeo.
+   */
+  metaFailingSince: string | null;
+  /** La última vez que Meta dijo que el número funcionaba. */
+  metaLastOkAt: string | null;
+  metaHistorial: EntradaHistorialMeta[];
 }
 
 type FilaInstancia = { id: string; name: string; number: string | null; token: string | null };
+type FilaConWaba = FilaInstancia & { businessId: string | null };
+
+/** Un aviso de cuenta que no casó con ninguna instancia (otro WABA, o la instancia ya no existe). */
+type AvisoSinInstancia = Extract<EntradaHistorialMeta, { tipo: 'aviso' }>;
 
 const ARCHIVO = 'pd-salud-meta.json';
 
 export class SaludMetaService {
   private readonly logger = new Logger('SaludMeta');
   private readonly estados = new Map<string, EstadoMetaInstancia>();
+  private avisosSinInstancia: AvisoSinInstancia[] = [];
+  private readonly ultimoChequeoPorAviso = new Map<string, number>();
   private enCurso: Promise<EstadoMetaInstancia[]> | null = null;
   private temporizadores: NodeJS.Timeout[] = [];
 
@@ -83,12 +136,37 @@ export class SaludMetaService {
     try {
       if (!existsSync(this.rutaArchivo)) return;
       const datos = JSON.parse(readFileSync(this.rutaArchivo, 'utf8'));
-      for (const e of Object.values<EstadoMetaInstancia>(datos ?? {})) {
-        if (e?.instanceId) this.estados.set(e.instanceId, e);
+      for (const e of Object.values<EstadoMetaInstancia>(datos?.instancias ?? {})) {
+        if (e?.instanceId)
+          this.estados.set(e.instanceId, { ...this.vacio(e), ...e, metaHistorial: e.metaHistorial ?? [] });
       }
+      this.avisosSinInstancia = Array.isArray(datos?.avisosSinInstancia) ? datos.avisosSinInstancia : [];
     } catch (error) {
       this.logger.warn(`No se pudo leer ${this.rutaArchivo}: ${error?.message ?? error}`);
     }
+  }
+
+  private vacio(fila: { instanceId: string; instanceName: string; number: string | null }): EstadoMetaInstancia {
+    return {
+      instanceId: fila.instanceId,
+      instanceName: fila.instanceName,
+      number: fila.number ?? null,
+      metaStatus: null,
+      metaCheckedAt: null,
+      metaError: null,
+      displayPhone: null,
+      verifiedName: null,
+      qualityRating: null,
+      nameStatus: null,
+      newNameStatus: null,
+      profilePicUrl: null,
+      metaAttemptAt: null,
+      metaAttemptError: null,
+      metaGraphError: null,
+      metaFailingSince: null,
+      metaLastOkAt: null,
+      metaHistorial: [],
+    };
   }
 
   /** Escribe el archivo con lo que hay en memoria. */
@@ -97,7 +175,12 @@ export class SaludMetaService {
       const dir = this.opciones.dir ?? INSTANCE_DIR;
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       const tmp = `${this.rutaArchivo}.tmp`;
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.estados), null, 2));
+      const datos = {
+        version: 1,
+        instancias: Object.fromEntries(this.estados),
+        avisosSinInstancia: this.avisosSinInstancia,
+      };
+      writeFileSync(tmp, JSON.stringify(datos, null, 2));
       renameSync(tmp, this.rutaArchivo);
     } catch (error) {
       // Sin archivo solo se pierde el último estado al reiniciar: el chequeo de arranque lo repone.
@@ -188,22 +271,7 @@ export class SaludMetaService {
     const ahora = this.ahora();
     const base: EstadoMetaInstancia = antes
       ? { ...antes, instanceName: fila.name }
-      : {
-          instanceId: fila.id,
-          instanceName: fila.name,
-          number: fila.number ?? null,
-          metaStatus: null,
-          metaCheckedAt: null,
-          metaError: null,
-          displayPhone: null,
-          verifiedName: null,
-          qualityRating: null,
-          nameStatus: null,
-          newNameStatus: null,
-          profilePicUrl: null,
-          metaAttemptAt: null,
-          metaAttemptError: null,
-        };
+      : this.vacio({ instanceId: fila.id, instanceName: fila.name, number: fila.number });
 
     let nuevo: EstadoMetaInstancia;
     if (r.tipo === 'ok') {
@@ -212,6 +280,7 @@ export class SaludMetaService {
         metaStatus: r.metaStatus,
         metaCheckedAt: ahora,
         metaError: null,
+        metaGraphError: null,
         displayPhone: r.displayPhone ?? base.displayPhone,
         verifiedName: r.verifiedName ?? base.verifiedName,
         qualityRating: r.qualityRating ?? null,
@@ -228,6 +297,7 @@ export class SaludMetaService {
         metaStatus: r.metaStatus,
         metaCheckedAt: ahora,
         metaError: r.error ?? null,
+        metaGraphError: r.graphError ?? null,
         metaAttemptAt: ahora,
         metaAttemptError: null,
       };
@@ -236,17 +306,133 @@ export class SaludMetaService {
       nuevo = { ...base, metaAttemptAt: ahora, metaAttemptError: r.error ?? 'sin respuesta' };
     }
 
+    // Desde cuándo está caído (lo vimos), y la última vez que funcionaba.
+    const caidoAntes = metaDesconectado(base.metaStatus);
+    const caidoAhora = metaDesconectado(nuevo.metaStatus);
+    if (caidoAhora && !caidoAntes) nuevo.metaFailingSince = ahora;
+    if (!caidoAhora) nuevo.metaFailingSince = null;
+    if (r.tipo === 'ok' && !caidoAhora) nuevo.metaLastOkAt = ahora;
+
+    const codigoAntes = codigoMeta(base.metaStatus, base.metaGraphError);
+    const codigoAhora = codigoMeta(nuevo.metaStatus, nuevo.metaGraphError);
+    if ((base.metaStatus ?? null) !== nuevo.metaStatus || codigoAntes !== codigoAhora) {
+      nuevo.metaHistorial = [
+        {
+          tipo: 'estado' as const,
+          at: ahora,
+          de: base.metaStatus ?? null,
+          a: nuevo.metaStatus ?? null,
+          codigoDe: codigoAntes,
+          codigoA: codigoAhora,
+          error: nuevo.metaError,
+        },
+        ...(base.metaHistorial ?? []),
+      ].slice(0, MAX_HISTORIAL);
+    }
+
     this.estados.set(fila.id, nuevo);
 
     if ((antes?.metaStatus ?? null) !== nuevo.metaStatus) {
       const texto = `Meta: "${fila.name}" pasa de ${antes?.metaStatus ?? '(sin comprobar)'} a ${nuevo.metaStatus ?? '(sin comprobar)'}`;
-      if (metaDesconectado(nuevo.metaStatus))
-        this.logger.warn(`${texto} — ${nuevo.metaError ?? motivoMeta(nuevo.metaStatus)}`);
+      if (caidoAhora) this.logger.warn(`${texto} — ${nuevo.metaError ?? motivoMeta(nuevo.metaStatus)}`);
       else this.logger.info(texto);
     } else if (r.tipo === 'sin_comprobar' || r.tipo === 'error_graph') {
       this.logger.warn(`Meta: no se pudo comprobar "${fila.name}": ${r.error}`);
     }
     return nuevo;
+  }
+
+  /**
+   * PD 2026-10-03: un webhook de CUENTA de Meta (`account_update`, `account_alerts`…). Se apunta en
+   * el historial de las instancias de ese WABA (o de ese número), se deja una línea clara en el log
+   * y se lanza un chequeo de esas instancias, para que el estado no espere a los 30 min.
+   * NO toca el flujo de mensajes. NUNCA lanza.
+   */
+  public async registrarAvisoCuenta(aviso: {
+    wabaId?: string | null;
+    time?: number | null;
+    field: string;
+    value: any;
+  }): Promise<{ instancias: string[] }> {
+    try {
+      const v = aviso.value ?? {};
+      const resumen = resumenAvisoCuenta(aviso.field, v);
+      let valor: unknown = v;
+      try {
+        const json = JSON.stringify(v);
+        if (json.length > 4000) valor = `${json.slice(0, 4000)}…`;
+      } catch {
+        valor = String(v);
+      }
+      const entrada: AvisoSinInstancia = {
+        tipo: 'aviso',
+        at: this.ahora(),
+        metaAt: aviso.time ? new Date(aviso.time * 1000).toISOString() : null,
+        field: aviso.field,
+        wabaId: aviso.wabaId ?? null,
+        resumen,
+        value: valor,
+      };
+
+      const clientName = this.configService.get<Database>('DATABASE')?.CONNECTION?.CLIENT_NAME;
+      const numeros = [v.phone_number_id, v.entity_id].filter(Boolean).map(String);
+      // En el ejemplo de Meta de `PARTNER_REMOVED`, `entry.id` y `waba_info.waba_id` son DISTINTOS:
+      // se busca por los dos.
+      const wabas = [aviso.wabaId, v.waba_info?.waba_id].filter(Boolean).map(String);
+      const filas: FilaConWaba[] = await this.prismaRepository.instance.findMany({
+        where: {
+          integration: Integration.WHATSAPP_BUSINESS,
+          ...(clientName ? { clientName } : {}),
+          OR: [
+            ...(wabas.length ? [{ businessId: { in: wabas } }] : []),
+            ...(numeros.length ? [{ number: { in: numeros } }] : []),
+          ],
+        },
+        select: { id: true, name: true, number: true, token: true, businessId: true },
+      });
+
+      // Si el aviso dice el número visible, se queda solo con esa instancia del WABA.
+      const digitos = (x?: string | null) => (x ?? '').replace(/\D/g, '');
+      let elegidas = filas;
+      if (v.display_phone_number && filas.length > 1) {
+        const mismas = filas.filter(
+          (f) => digitos(this.estados.get(f.id)?.displayPhone) === digitos(v.display_phone_number),
+        );
+        if (mismas.length) elegidas = mismas;
+      }
+
+      if (!elegidas.length) {
+        this.avisosSinInstancia = [entrada, ...this.avisosSinInstancia].slice(0, MAX_HISTORIAL);
+        this.logger.warn(`Meta: aviso de cuenta SIN instancia (WABA ${aviso.wabaId ?? '?'}): ${resumen}`);
+        this.persistir();
+        return { instancias: [] };
+      }
+
+      for (const f of elegidas) {
+        const e =
+          this.estadoDe(f.id, f.number) ?? this.vacio({ instanceId: f.id, instanceName: f.name, number: f.number });
+        this.estados.set(f.id, {
+          ...e,
+          instanceName: f.name,
+          metaHistorial: [entrada, ...(e.metaHistorial ?? [])].slice(0, MAX_HISTORIAL),
+        });
+      }
+      const nombres = elegidas.map((f) => f.name);
+      this.logger.warn(`Meta: aviso de cuenta para ${nombres.map((n) => `"${n}"`).join(', ')}: ${resumen}`);
+      this.persistir();
+
+      // Un aviso de cuenta suele querer decir que algo cambió: se comprueba ya. Como mucho una vez
+      // cada 5 min por instancia: `/webhook/meta` no verifica la firma de Meta, y un aviso falso
+      // repetido no debe convertirse en una ráfaga de llamadas a Graph con nuestro token.
+      const ahoraMs = Date.parse(this.ahora());
+      const toca = nombres.filter((n) => ahoraMs - (this.ultimoChequeoPorAviso.get(n) ?? 0) >= 5 * 60_000);
+      toca.forEach((n) => this.ultimoChequeoPorAviso.set(n, ahoraMs));
+      if (toca.length) this.comprobar(toca).catch(() => undefined);
+      return { instancias: nombres };
+    } catch (error) {
+      this.logger.warn(`Meta: no se pudo apuntar el aviso de cuenta ${aviso.field}: ${error?.message ?? error}`);
+      return { instancias: [] };
+    }
   }
 
   /**
@@ -279,6 +465,13 @@ export class SaludMetaService {
         metaNameStatus: e?.nameStatus ?? null,
         metaNewNameStatus: e?.newNameStatus ?? null,
         metaProfilePicUrl: e?.profilePicUrl ?? null,
+        // Para saber a futuro QUÉ TIPO de desconexión fue (Luis, 3 oct 2026).
+        metaCodigo: codigoMeta(e?.metaStatus, e?.metaGraphError),
+        metaGraphError: e?.metaGraphError ?? null,
+        metaFailingSince: e?.metaFailingSince ?? null,
+        metaLastOkAt: e?.metaLastOkAt ?? null,
+        metaHistorial: (e?.metaHistorial ?? []).slice(0, 10),
+        metaUltimoAviso: (e?.metaHistorial ?? []).find((h) => h.tipo === 'aviso') ?? null,
       };
       if (desconectado && fila.connectionStatus === 'open') {
         extra.connectionStatus = 'close';

@@ -1,6 +1,6 @@
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
-import { metaDesconectado, motivoMeta } from '@api/integrations/channel/meta/salud-meta';
-import { SaludMetaService } from '@api/integrations/channel/meta/salud-meta.service';
+import { codigoMeta, metaDesconectado, motivoMeta } from '@api/integrations/channel/meta/salud-meta';
+import { EstadoMetaInstancia, SaludMetaService } from '@api/integrations/channel/meta/salud-meta.service';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -510,14 +510,15 @@ export class InstanceController {
 
     const results = [];
     let huboMeta = false;
-    const resumenMeta = (
-      m: { metaStatus: string | null; metaCheckedAt: string | null; metaAttemptError: string | null } | null,
-    ) =>
+    const resumenMeta = (m: EstadoMetaInstancia | null) =>
       m
         ? {
             metaStatus: m.metaStatus,
             metaCheckedAt: m.metaCheckedAt,
             metaConnected: m.metaStatus ? !metaDesconectado(m.metaStatus) : null,
+            metaCodigo: codigoMeta(m.metaStatus, m.metaGraphError),
+            metaGraphError: m.metaGraphError,
+            metaFailingSince: m.metaFailingSince,
             metaMotivo: motivoMeta(m.metaStatus, m.metaAttemptError),
           }
         : undefined;
@@ -532,8 +533,7 @@ export class InstanceController {
       // What WhatsApp returned for a QR account: the profile name and the business name.
       let whatsapp: { pushName?: string | null; verifiedName?: string | null } | null = null;
       // PD 2026-10-03: el estado del número en Meta (solo Cloud API).
-      let meta: { metaStatus: string | null; metaCheckedAt: string | null; metaAttemptError: string | null } | null =
-        null;
+      let meta: EstadoMetaInstancia | null = null;
 
       try {
         if (inst.integration === Integration.WHATSAPP_BUSINESS) {
@@ -670,6 +670,7 @@ export class InstanceController {
       // `profilePicUrl` lleva firma y caducidad: no hace falta en este informe.
       profilePicUrl: undefined,
       metaConnected: e.metaStatus ? !metaDesconectado(e.metaStatus) : null,
+      metaCodigo: codigoMeta(e.metaStatus, e.metaGraphError),
       metaMotivo: motivoMeta(e.metaStatus, e.metaAttemptError),
     }));
     return { results, requested: results.length };
