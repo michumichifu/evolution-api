@@ -1001,3 +1001,18 @@ respaldos de n8n, Chatwoot y Marie.
 - 🔴 **Un `main.js.bak-*` nuevo en `dist-parcheado` significa que alguien volvió a editar el
   compilado a mano en el servidor.** Antes de desplegar, se mira qué cambió y se porta al fuente, o
   el `rsync` lo borra (pasó el 8 sep y el 7 oct).
+
+### 9. 🟢 Probado con un teléfono real (8 oct 2026, 04:33 a 04:35 RD)
+
+Lo que en los apartados 1 y 7 figura como «sin probar con un teléfono» **lo probó Luis esa misma
+madrugada** con «Luis Personal» (leído en el log y en nginx):
+
+| Hora RD | En el panel | En el log |
+|---|---|---|
+| 04:33:39 | Instancia creada de nuevo | — |
+| 04:33:58 | Vinculación (código `241HWGJ8`, ciclo 1) | `515` a las 04:34:17 con `isDeleting: false`; `open` a las 04:34:22 |
+| 04:35:05 | **«Desconectar»** | ***«logoutInstance: WhatsApp confirmed that the linked device was removed»*** |
+| 04:35:41 | **«Generar Código QR» sobre la misma instancia** | `515` a las 04:35:46 con **`isDeleting: false`**; **`open` a las 04:35:51**; 0 conflictos |
+
+La última fila es el caso que falló toda la noche del 7 al 8 (vincular después de un `logout`).
+Conectó en 11 segundos, sin reiniciar el contenedor ni recrear la instancia.
