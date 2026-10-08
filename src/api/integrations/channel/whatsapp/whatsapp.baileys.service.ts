@@ -400,6 +400,32 @@ export class BaileysStartupService extends ChannelStartupService {
     this.messageProcessor.onDestroy();
 
     if (this.client) {
+      // PD 2026-10-08: `client.logout()` de Baileys manda el `remove-companion-device` con
+      // `sendNode` y cierra el socket ACTO SEGUIDO, sin esperar la respuesta. Si el cierre gana la
+      // carrera, WhatsApp no llega a procesarlo: aquí se borran las credenciales y en el teléfono
+      // el dispositivo sigue vinculado para siempre, con su «última actividad» (le pasó a Luis el
+      // 8 oct a las 03:57 con «Luis Personal»; a las 03:18, con el mismo código, sí se quitó).
+      // Se pide antes con `query`, que espera la respuesta, y solo entonces se cierra. Si WhatsApp
+      // corta la conexión al quitar el dispositivo, la consulta se rechaza: también vale.
+      const jid = this.credencialesEnMemoria()?.account ? (this.client.user?.id ?? null) : null;
+      if (jid && this.stateConnection?.state === 'open') {
+        try {
+          await this.client.query(
+            {
+              tag: 'iq',
+              attrs: { to: 's.whatsapp.net', type: 'set', xmlns: 'md' },
+              content: [{ tag: 'remove-companion-device', attrs: { jid, reason: 'user_initiated' } }],
+            },
+            8000,
+          );
+          this.logger.info('logoutInstance: WhatsApp confirmed that the linked device was removed');
+        } catch (error) {
+          this.logger.warn(
+            `logoutInstance: no confirmation from WhatsApp for remove-companion-device (${(error as Error)?.message}); the phone may still list this device`,
+          );
+        }
+      }
+
       try {
         await this.client.logout('Log out instance: ' + this.instanceName);
       } catch (error) {
