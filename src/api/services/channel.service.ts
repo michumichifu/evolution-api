@@ -1,6 +1,7 @@
 import { InstanceDto } from '@api/dto/instance.dto';
 import { ProxyDto } from '@api/dto/proxy.dto';
 import { SettingsDto } from '@api/dto/settings.dto';
+import { esTokenDeMeta } from '@api/integrations/channel/whatsapp/vinculacion';
 import { ChatwootDto } from '@api/integrations/chatbot/chatwoot/dto/chatwoot.dto';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { DifyService } from '@api/integrations/chatbot/dify/services/dify.service';
@@ -456,7 +457,8 @@ export class ChannelStartupService {
       serverUrl,
       dateTime: now,
       sender: this.wuid,
-      apiKey: expose && instanceApikey ? instanceApikey : null,
+      // PD 2026-10-07: el token de Meta de una Cloud API no viaja en el sobre (ver esTokenDeMeta).
+      apiKey: expose && instanceApikey && !esTokenDeMeta(instanceApikey) ? instanceApikey : null,
       local,
       integration,
       extra,
