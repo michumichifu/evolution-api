@@ -305,11 +305,57 @@ export class BaileysStartupService extends ChannelStartupService {
 
   /**
    * PD 2026-10-08: ¿hay una generación de QR o de código en curso? Es decir, el socket está abierto
-   * y todavía no hay sesión iniciada (`client.user` solo existe con las credenciales registradas).
+   * y el dispositivo todavía no está emparejado. Lo que lo dice es `creds.account`, que Baileys
+   * solo escribe al completar el emparejamiento (`configureSuccessfulPairing`). 🔴 `client.user`
+   * NO sirve: pedir un código alfanumérico ya pone un `creds.me` provisional con el número.
    * Una instancia ya vinculada que reconecta también pasa por `connecting`, y esa NO cuenta.
    */
   public enVinculacion(): boolean {
-    return this.stateConnection?.state === 'connecting' && !this.client?.user?.id;
+    return this.stateConnection?.state === 'connecting' && !this.credencialesEnMemoria()?.account;
+  }
+
+  private credencialesEnMemoria(): { me?: unknown; account?: unknown } | undefined {
+    return (this.instance.authState as any)?.state?.creds;
+  }
+
+  /**
+   * PD 2026-10-08: unas credenciales «a medias» son las que deja una petición de código
+   * alfanumérico que no llegó a emparejar: `requestPairingCode` escribe `creds.me` con el número,
+   * y desde ahí CUALQUIER socket nuevo intenta iniciar sesión con esa identidad en vez de pedir un
+   * emparejamiento, y WhatsApp contesta 401. Medido el 8 oct 2026: pasar de código a QR cerraba la
+   * instancia con 401, y por lo mismo una instancia quedaba dando 401 tras un intento fallido.
+   * Antes de abrir otra generación se retira el socket (para que no las vuelva a guardar) y se
+   * borran. 🔴 Si las credenciales se leen de la base y la instancia tiene dueño (`ownerJid`), NO
+   * se tocan: ahí manda el camino de siempre, que solo borra ante un 401.
+   */
+  private async limpiarCredencialesAMedias(): Promise<void> {
+    let creds = this.credencialesEnMemoria();
+    const deMemoria = !!creds;
+
+    if (!creds) {
+      try {
+        creds = ((await this.defineAuthState()) as any)?.state?.creds;
+      } catch {
+        return;
+      }
+    }
+
+    if (!creds?.me || creds?.account) return;
+
+    if (!deMemoria) {
+      const fila = await this.prismaRepository.instance.findUnique({
+        where: { id: this.instanceId },
+        select: { ownerJid: true },
+      });
+      if (fila?.ownerJid) return;
+    }
+
+    this.logger.warn(
+      'Half-paired credentials found (a pairing code was requested and never completed); clearing them before opening a new QR/pairing-code generation',
+    );
+    this.retireCurrentClient();
+    await this.clearStoredCredentials();
+    this.instance.authState = undefined;
   }
 
   /**
@@ -317,10 +363,11 @@ export class BaileysStartupService extends ChannelStartupService {
    * cerrando la que hubiera. Antes se vacía lo que quedara de la anterior, para que
    * `/instance/connect` no conteste con un código viejo mientras llega el nuevo: así se le entregó
    * a una clienta un código de cinco minutos. `desdeCero` pone además la cuenta de QR a 0 (se usa
-   * al abrir desde `close`): con la cuenta a 0, un 401 de unas credenciales a medias las limpia.
+   * al abrir desde `close`).
    */
   public async abrirVinculacion(number?: string, desdeCero = false): Promise<void> {
     this.instance.qrcode = { count: desdeCero ? 0 : (this.instance.qrcode?.count ?? 0) };
+    await this.limpiarCredencialesAMedias();
     await this.connectToWhatsapp(number || undefined);
   }
 
