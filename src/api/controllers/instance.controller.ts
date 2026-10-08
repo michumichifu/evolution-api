@@ -1,6 +1,11 @@
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
 import { codigoMeta, metaDesconectado, motivoMeta } from '@api/integrations/channel/meta/salud-meta';
 import { EstadoMetaInstancia, SaludMetaService } from '@api/integrations/channel/meta/salud-meta.service';
+import {
+  decidirVinculacion,
+  generacionLista,
+  reiniciarCortaLaGeneracion,
+} from '@api/integrations/channel/whatsapp/vinculacion';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -339,11 +344,38 @@ export class InstanceController {
         return await this.connectionState({ instanceName });
       }
 
+      // PD 2026-10-08: pedir el OTRO tipo de vinculación (código con un QR abierto, o al revés)
+      // cierra la generación en curso y abre la pedida. Antes, en `connecting`, se devolvía el QR
+      // en curso sin mirar el `number` y el Manager se quedaba con la rueda girando. Ver
+      // `vinculacion.ts`. Solo lo hace el servicio de Baileys: los demás canales no tienen estos
+      // métodos y siguen como estaban.
+      const sabeVincular = typeof instance.enVinculacion === 'function';
+      const accion = decidirVinculacion({
+        estado: state,
+        enVinculacion: sabeVincular ? instance.enVinculacion() : false,
+        numeroActual: instance.phoneNumber,
+        numeroPedido: number,
+      });
+
+      if (accion === 'cambiar') {
+        this.logger.info(
+          `"${instanceName}": piden ${number ? 'código' : 'QR'} con una generación de ${instance.phoneNumber ? 'código' : 'QR'} en curso; se cierra y se abre la pedida`,
+        );
+        await instance.abrirVinculacion(number);
+        return await this.esperarGeneracion(instance, !!number);
+      }
+
       if (state == 'connecting') {
         return instance.qrCode;
       }
 
       if (state == 'close') {
+        if (sabeVincular) {
+          // Sin restos de la generación anterior en la respuesta, y con la cuenta de QR a cero.
+          await instance.abrirVinculacion(number, true);
+          return await this.esperarGeneracion(instance, !!number);
+        }
+
         await instance.connectToWhatsapp(number);
 
         await delay(2000);
@@ -363,6 +395,20 @@ export class InstanceController {
     }
   }
 
+  /**
+   * PD 2026-10-08: espera a que la generación recién abierta produzca lo pedido (el QR, o el código
+   * si se pidió con número) en vez de contestar a los 2 segundos con lo que haya. Tope de 10 s: si
+   * no llega, se devuelve lo que hay, que tras `abrirVinculacion` está vacío y no es de otra tanda.
+   */
+  private async esperarGeneracion(instance: any, conNumero: boolean) {
+    for (let i = 0; i < 25; i++) {
+      await delay(400);
+      if (generacionLista(instance.qrCode, conNumero)) break;
+      if (instance.connectionStatus?.state === 'open') break;
+    }
+    return instance.qrCode;
+  }
+
   public async restartInstance({ instanceName }: InstanceDto) {
     try {
       const instance = this.waMonitor.waInstances[instanceName];
@@ -376,6 +422,14 @@ export class InstanceController {
         throw new BadRequestException('The "' + instanceName + '" instance is not connected');
       }
       this.logger.info(`Restarting instance: ${instanceName}`);
+
+      // PD 2026-10-08: «Reiniciar» en mitad de una generación de QR o de código la CORTA y deja la
+      // instancia parada. Antes cerraba el socket y abría otro en modo QR, así que la generación
+      // seguía. Luis: «si le doy reiniciar… debería cortar esa generación».
+      if (typeof instance.enVinculacion === 'function' && reiniciarCortaLaGeneracion(state, instance.enVinculacion())) {
+        await instance.detenerVinculacion();
+        return { instance: { instanceName: instanceName, status: 'close' } };
+      }
 
       if (typeof instance.restart === 'function') {
         await instance.restart();

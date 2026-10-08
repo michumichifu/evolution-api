@@ -303,6 +303,48 @@ export class BaileysStartupService extends ChannelStartupService {
     return this.stateConnection;
   }
 
+  /**
+   * PD 2026-10-08: ¿hay una generación de QR o de código en curso? Es decir, el socket está abierto
+   * y todavía no hay sesión iniciada (`client.user` solo existe con las credenciales registradas).
+   * Una instancia ya vinculada que reconecta también pasa por `connecting`, y esa NO cuenta.
+   */
+  public enVinculacion(): boolean {
+    return this.stateConnection?.state === 'connecting' && !this.client?.user?.id;
+  }
+
+  /**
+   * PD 2026-10-08: abre una generación nueva (con número → código alfanumérico; sin número → QR),
+   * cerrando la que hubiera. Antes se vacía lo que quedara de la anterior, para que
+   * `/instance/connect` no conteste con un código viejo mientras llega el nuevo: así se le entregó
+   * a una clienta un código de cinco minutos. `desdeCero` pone además la cuenta de QR a 0 (se usa
+   * al abrir desde `close`): con la cuenta a 0, un 401 de unas credenciales a medias las limpia.
+   */
+  public async abrirVinculacion(number?: string, desdeCero = false): Promise<void> {
+    this.instance.qrcode = { count: desdeCero ? 0 : (this.instance.qrcode?.count ?? 0) };
+    await this.connectToWhatsapp(number || undefined);
+  }
+
+  /**
+   * PD 2026-10-08: corta la generación en curso y deja la instancia parada, sin reconectar.
+   * `endSession` hace que el cierre de este socket no dispare la reconexión; `createClient` lo
+   * repone en la siguiente apertura.
+   */
+  public async detenerVinculacion(): Promise<void> {
+    this.logger.info('Stopping the QR/pairing-code generation in progress (restart requested)');
+    this.endSession = true;
+    this.retireCurrentClient();
+    this.phoneNumber = undefined;
+    this.instance.qrcode = { count: 0 };
+    this.stateConnection = { state: 'close', statusReason: DisconnectReason.connectionClosed };
+
+    await this.prismaRepository.instance.update({
+      where: { id: this.instanceId },
+      data: { connectionStatus: 'close' },
+    });
+
+    this.sendDataWebhook(Events.CONNECTION_UPDATE, { instance: this.instance.name, ...this.stateConnection });
+  }
+
   public async logoutInstance() {
     // Mark instance as deleting to prevent reconnection attempts.
     this.isDeleting = true;
@@ -980,6 +1022,14 @@ export class BaileysStartupService extends ChannelStartupService {
     };
 
     this.endSession = false;
+    // PD 2026-10-08: `logoutInstance()` pone `isDeleting = true` para que el cierre de ESE socket no
+    // reconecte, y nada lo devolvía a `false`. Con la marca puesta, la siguiente vinculación llegaba
+    // hasta el final en el teléfono (emparejamiento y `515`, «restart required») y aquí se saltaba
+    // la reconexión obligatoria: «Instance is being deleted/ended, skipping reconnection attempt».
+    // El teléfono contestaba «No se pudo vincular el dispositivo» sin que fallara nada en él. Solo
+    // se quitaba reiniciando el contenedor o recreando la instancia. Un socket nuevo es una
+    // instancia viva otra vez: la marca se repone aquí, junto a `endSession`.
+    this.isDeleting = false;
 
     this.client = makeWASocket(socketConfig);
 
