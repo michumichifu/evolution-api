@@ -912,3 +912,27 @@ normalidad, y tres peticiones seguidas del mismo código (lo que hace ahora el M
 devolvieron el mismo código **sin abrir ningún socket**. Md5 del `main.js` en el servidor:
 `856322cd50ed8258bb29fdf200b58dce`. Las 11 instancias, igual antes y después del reinicio (el tercero
 de la madrugada: 02:16, 02:22 y 02:44).
+
+### 6. Qué se borra al eliminar una instancia, y el resto que quedaba en Redis (`e2d4a218`, 8 oct 2026, 03:35 RD)
+
+Luis preguntó: *«en caso de que sea una instancia ya más grande, con contactos, mensajes, ¿cómo
+procede el borrado ahí? ¿Lo hace correctamente?»*. Comprobado en producción tras borrar la «Luis
+Personal» antigua (miles de mensajes):
+
+| Dónde | Qué pasa al borrar | Medido |
+|---|---|---|
+| **Base de datos** (Postgres) | Se borra la fila de `Instance` y, **en cascada**, todo lo suyo: `Message`, `MessageUpdate`, `Chat`, `Contact`, `Label`, `Setting`, `Webhook`, `Chatwoot`, `Session`… Las 34 claves ajenas que apuntan a `Instance` son `ON DELETE CASCADE` (mirado en `pg_constraint`, no en el esquema) | **0 filas huérfanas** en las diez tablas revisadas |
+| **Disco** | `rmSync` de `/evolution/instances/<id>` y de `store/chatwoot/<nombre>` | Ninguna carpeta sobrante. Las fotos, audios y documentos **no se guardan en disco** (S3 apagado; tabla `Media` con 0 filas): se piden a WhatsApp o a Meta al abrirlos |
+| **WhatsApp** | El panel llama antes a `logout`: el dispositivo vinculado desaparece del teléfono | Visto por Luis el 8 oct |
+| **Redis** | 🔴 **Aquí quedaba un resto.** Las claves de la sesión de Baileys viven en el hash `evolution:instance:<id>` y `cleaningUp` solo lo borraba con `CACHE_REDIS_SAVE_INSTANCES` encendido (aquí está apagado). Lo limpiaba `logout`, que **no hace nada si la instancia ya está en `close`** | **16 hashes huérfanos, 51 MB**, de instancias borradas estando caídas |
+
+**El arreglo:** `cleaningUp` borra ese hash siempre que Redis esté encendido. Probado: instancia
+parada con una clave puesta a mano en su hash → `delete` → el hash ya no existe.
+
+⚠️ **Los 16 hashes antiguos NO se han tocado**: son de instancias que ya no existen, pero borrar es
+irreversible y antes hay que confirmar que la recuperación de sesiones («sesiones restaurables» del
+Manager) no los usa. Queda a decisión de Luis.
+
+⚠️ **El borrado tarda en proporción al tamaño**: el backend contesta «Instance deleted» y borra
+después, por el evento `remove.instance`. Por eso el Manager espera a que `fetchInstances` deje de
+devolverla antes de decir «Eliminada» (`evolution-manager-v2`, `168fe73` y `6498e1e`).
