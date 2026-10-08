@@ -32,6 +32,8 @@ compila y se despliega. **Nunca se edita el `dist` del servidor a mano** (ya pas
 | `fix: comandos del bot sin enviar al paciente, y notas de voz ogg por Cloud API` (`226eb28d`, 27 sep 2026) | 🔴 **Un comando del bot escrito en Chatwoot le llegaba al paciente** desde que la bandeja 82 entrega por Evolution. Luis: *«originalmente uno escribe en la conversación y se activaba o desactivaba y no le salía al paciente en su WhatsApp»*. `receiveWebhook` ya no envía un saliente que es **solo** un comando (`/^\s*#[a-z0-9áéíóúñ-]+(\s+\+?[\d\s-]{7,20})?\s*$/i`, sin adjuntos): `#pausa`, `#pausa 18091234567`, `#lista`… sí; «Hola #pausa» o «el #martes», no. El flujo lo sigue leyendo por el webhook de cuenta. Vale para todas las instancias. **Notas de voz por Cloud API:** `processAudio` subía todo audio en base64 como `.mp3` **y sin tipo** (el `mimetype` se ponía después de subirlo); un ogg (base64 que empieza por `T2dnUw`) va ahora como `audio/ogg` y el envío lleva **`voice: true`** (nota de voz de verdad: micrófono, foto, descarga automática y transcripción; doc de Meta «Audio messages»). Y `getBase64FromMediaMessage` acepta `mimetype` además de `mime_type`: sin eso la nota enviada llegaba a Chatwoot sin tipo. Respaldo: `/root/dist-parcheado-respaldo-20260927-pre-voz-comandos.tgz`. |
 | `feat(chatwoot): el anuncio viaja en pd_anuncio para que el fork lo pinte como en WhatsApp` (`f896a03f`, 27 sep 2026) | Luis quiere la tarjeta **en el orden del teléfono**: rótulo «Mensaje a partir de un anuncio», la tarjeta del anuncio y, debajo, el mensaje. Chatwoot no deja ordenar imagen y texto dentro de un mensaje, así que el anuncio viaja además en **`content_attributes.pd_anuncio`** (`red`, `titulo`, `texto`, `enlace`, `bienvenida`, `mensaje`, `adjunto`) y **el fork de Chatwoot lo pinta** (`WhatsappAnuncio.vue`, `a064c733c` de `chatwoot-pd`), igual que `pd_interactivo`. El `content` sigue llevando todo en texto, ya en ese orden, para el correo de aviso, el buscador y cualquier cliente que no sea el fork. `sendData` acepta atributos propios (`atributosExtra`) y `createMessage` el anuncio (caso sin imagen). |
 | `feat(cloud-api): el estado real del número según Meta, aparte de connectionStatus` (`121df539` + `ff64f8da`) y `…qué tipo de desconexión fue, desde cuándo, y los avisos de cuenta de Meta` (`6232c833`), 3 oct 2026; pruebas en `1bfbdd81` y `6232c833` | 🔴 **Una instancia Cloud API salía «Conectado» SIEMPRE**: `BusinessStartupService.stateConnection` es `{ state: 'open' }` fijo. «Zenithe 2 - Cloud Api» llevaba desde el 30 sep 23:18 RD **fuera de internet** en el Business Manager y con la app sin acceso (Graph: code 100, subcode 33), y nadie se enteró en dos días. Luis: *«tiene que indicar realmente que esa instancia está desconectada, no aparecer conectado como sale actualmente»*. Ahora el backend le pregunta a Meta por cada número (`salud-meta.ts` + `salud-meta.service.ts`), guarda el resultado **aparte** y `fetchInstances` lo devuelve. **Todo en el apartado de abajo**, «El estado real de una Cloud API según Meta». 🟢 **Desplegado el 3 oct 2026, 03:31 RD** (`eeb7bb48`; respaldo `/root/dist-parcheado-respaldo-20261003-0929-pre-salud-meta.tgz`; 823 archivos en el servidor = 815 + las 8 copias `main.js.bak-*`). Comprobado: «PD Cloud» → `CONNECTED`, «Zenithe 2 - Cloud Api» → `NO_ACCESS` 100/33 y `connectionStatus: close` solo en la respuesta (la base sigue `open`). |
+| `fix(webhook): el token de Meta de una Cloud API no viaja en el sobre` (`415cf261`, 8 oct 2026) | 🔴 **Otra vez un parche que vivía solo en el servidor.** José Luis cambió el 7 oct a las 14:34 RD el `main.js` y el `main.mjs` de `dist-parcheado` a mano (respaldos `main.js.bak-20261007-183438-pre-sin-token-meta` y `main.mjs.bak-…`): en una instancia Cloud API la «apikey» de la instancia **es el token de Meta** (empieza por `EAA`), el sobre de `sendDataWebhook` lo llevaba en `apikey` y **n8n lo guardaba en cada ejecución**. Él mismo lo avisó: *«si se vuelve a generar dist-parcheado desde el código fuente, ese cambio se pierde»*. Portado al fuente como `esTokenDeMeta()` (`vinculacion.ts`) antes de desplegar lo de abajo; **sin este commit el `rsync` lo habría borrado**. Las instancias por QR siguen enviando su llave, porque el flujo de Luisa la usa. 🔴 El `rsync` excluye ahora también **`main.mjs.bak-*`**. |
+| `fix(vinculacion): logout ya no impide vincular, y pedir el otro tipo cierra la generación` (`9e16a982`) y `…las credenciales a medias de un código se borran antes de abrir otra generación` (`997f61ee`), 8 oct 2026 | 🔴 **Vincular un número costó 67 minutos y diez intentos con una clienta al teléfono** (Dento Estetic, la noche del 7 al 8 oct). Cuatro fallos, **todos en el apartado de abajo**, «Vincular por QR o por código». En corto: **(1)** `createClient` repone `isDeleting`, que `logoutInstance()` ponía a `true` para siempre (el teléfono aceptaba la vinculación, llegaba el `515` y aquí se saltaba la reconexión; **documentado desde el 7 ago y sin arreglar**); **(2)** `/instance/connect` con una generación del otro tipo en curso la cierra y abre la pedida (antes: `pairingCode: null` y el Manager girando); **(3)** `/instance/restart` en mitad de una generación la corta; **(4)** las credenciales a medias que deja `requestPairingCode` (`creds.me` sin `creds.account`) se borran antes de abrir otra generación (si no, **401**). 🟢 **Desplegado el 8 oct 2026, 02:22 RD** (`997f61ee`, md5 del `main.js` `cd5960bf26ac1ffeae31e01be0a7eeb7`; respaldo `/root/dist-parcheado-respaldo-20261008-0815-pre-vinculacion.tgz`; **829 archivos** en el servidor = 819 + 10 respaldos). Las 11 instancias, igual antes y después de los dos reinicios; 0 errores, 0 conflictos. |
 
 ## 🔴 EL 8 DE SEPTIEMBRE DE 2026 HABÍA DOS PARCHES SOLO EN EL SERVIDOR
 
@@ -76,7 +78,7 @@ la imagen oficial**, que es `evoapicloud/evolution-api:2.4.0-rc2`:
 npm ci
 npx prisma generate --schema ./prisma/postgresql-schema.prisma   # lo necesita el tsc
 npm run build                                                    # tsc --noEmit && tsup
-rsync -a --delete dist/ root@89.117.73.129:/opt/evolution-api/dist-parcheado/
+rsync -a --delete --exclude 'main.js.bak-*' --exclude 'main.mjs.bak-*' dist/ root@89.117.73.129:/opt/evolution-api/dist-parcheado/
 ssh root@89.117.73.129 'docker restart evolution-api'
 ```
 
@@ -779,3 +781,106 @@ literal de producción.
    `connectionStatusGuardado: "open"`, `metaCodigo: "100/33"`; las demás Cloud API con `metaStatus`.
 5. **La base sigue diciendo `open`** para Zenithe 2 (`select name, "connectionStatus" from "Instance"`):
    si dijera `close`, algo escribió donde no debía.
+
+## 🆕 Vincular por QR o por código: los cuatro fallos del 8 oct 2026
+
+La crónica entera, intento por intento y con la conversación de la clienta, está en la agencia:
+`Documentacion/REGISTRO - La vinculacion por QR del numero de Viki (Dento Estetic 2) en Evolution: la
+noche entera, intento por intento (7 y 8 oct 2026).md`. Aquí va lo que se cambió y por qué.
+
+### 1. 🔴 Un `logout` dejaba la instancia sin poder vincularse (`isDeleting`)
+
+`logoutInstance()` pone `isDeleting = true` y `endSession = true` para que el cierre de ese socket no
+reconecte. `createClient` reponía `endSession`, **y `isDeleting` no lo reponía nadie**. Con la marca
+puesta, la siguiente vinculación llegaba hasta el final **en el teléfono**: emparejaba, WhatsApp
+mandaba el `515` («restart required», que es **normal** y obliga a reconectar) y `connectionUpdate`
+escribía *«Instance is being deleted/ended, skipping reconnection attempt»*. El teléfono contestaba
+**«No se pudo vincular el dispositivo. Se produjo un error»** (con código) o **«No se pudo iniciar
+sesión. Revisa la conexión a internet»** (con QR). Ninguna de las dos cosas era verdad.
+
+Medido dos veces la misma noche, con la clienta haciéndolo bien: código `E9RS-FL77` (emparejado a las
+04:19:37 UTC, `515` a las 04:19:38 con `isDeleting: true`) y un QR (escaneado a las 04:52:59, `515` a
+las 04:53:00). Con la marca fuera, el mismo teléfono vinculó a la primera (05:05:23).
+
+**El arreglo:** una línea en `createClient`, `this.isDeleting = false`, junto a `endSession`. Un
+socket nuevo es una instancia viva otra vez.
+
+🔴 **Lo dispara cualquier `DELETE /instance/logout`**: el botón «Desconectar» del Manager, o un
+`logout` por API. Antes solo se quitaba con `docker restart evolution-api` o recreando la instancia,
+que es por lo que Luis tenía la costumbre de borrarla y crearla de nuevo.
+
+### 2. Pedir el código con un QR abierto no daba código
+
+`connectToWhatsapp` del controlador, con el estado en `connecting`, hacía `return instance.qrCode`
+sin mirar el `number`. El Manager recibía `pairingCode: null` y pintaba la rueda sin fin.
+
+**El arreglo:** `decidirVinculacion()` (`vinculacion.ts`). Si hay una generación en curso
+(`enVinculacion()`) y lo pedido es de **otro tipo** —código con un QR abierto, QR con un código en
+curso, u otro número—, se cierra y se abre la pedida (`abrirVinculacion`). Si es del mismo tipo, se
+devuelve lo que hay **sin tocar el socket** (el Manager sondea `connect` cada ~10 s con el diálogo
+del QR abierto). Una instancia **ya vinculada** que reconecta también pasa por `connecting` y **no se
+toca**: abrirle otro socket sería el bucle 440.
+
+Y la respuesta ya no trae restos: antes de abrir se vacía `instance.qrcode`, y `esperarGeneracion`
+espera hasta 10 s a que llegue lo pedido (antes eran 2 s fijos y lo que hubiera: así salió un código
+de cinco minutos).
+
+### 3. «Reiniciar» no cortaba la generación
+
+`/instance/restart` cerraba el socket y volvía a llamar a `connectToWhatsapp` **sin número**: la
+generación seguía, en modo QR. Ahora, en mitad de una generación, `detenerVinculacion()` retira el
+socket, pone `endSession` y deja la instancia en `close`. Con una instancia vinculada, «Reiniciar»
+hace lo de siempre.
+
+### 4. 🔴 Las credenciales a medias de un código dan 401 (salió al probar los otros tres)
+
+`requestPairingCode` de Baileys escribe **`creds.me` con el número** (`{ id: <número>@s.whatsapp.net,
+name: '~' }`) y `creds.pairingCode`. Desde ahí, **cualquier socket nuevo** entra por
+`generateLoginNode(creds.me.id)` en vez de por el registro, y WhatsApp contesta **401**. Por eso:
+
+- pasar de código a QR cerraba la instancia (lo cazó la primera prueba en producción de este
+  despliegue: T2c devolvió `{count: 2}` y `statusCode: 401`);
+- y una instancia quedaba dando 401 tras un intento de código fallido, mientras el endpoint seguía
+  devolviendo el código viejo.
+
+**El arreglo:** `limpiarCredencialesAMedias()`, que `abrirVinculacion` llama siempre. Si hay
+`creds.me` y **no** hay `creds.account` (que Baileys solo escribe en `configureSuccessfulPairing`),
+retira el socket —para que no las vuelva a guardar— y las borra. 🔴 **Si las credenciales se leen de
+la base y la instancia tiene `ownerJid`, no se tocan**: ahí sigue mandando el camino de siempre.
+
+🔴 **`client.user` NO sirve para saber si hay sesión**: con un código en curso ya devuelve ese
+`creds.me` provisional. `enVinculacion()` mira `creds.account`.
+
+### Las pruebas
+
+```bash
+npx tsx --test pruebas-pd/vinculacion.test.ts      # 14 pruebas; no toca WhatsApp ni la base
+```
+
+La de `createClient repone isDeleting` **falla si se quita la línea** (comprobado mutando el fuente).
+
+### Cómo se comprobó en producción (8 oct 2026, 02:24 RD), con una instancia desechable
+
+Con `zz-prueba-vinculacion` y el número ficticio `18095550100`, por la API local:
+
+| Paso | Resultado |
+|---|---|
+| `connect` (QR) | `pairingCode: null`, ciclo 1 |
+| `connect?number=…` **con el QR abierto** | `pairingCode: HFST3XRR`, ciclo 2, en 1 s. Log: *«piden código con una generación de QR en curso; se cierra y se abre la pedida»* |
+| el mismo `connect?number=…` otra vez | el mismo código, sin abrir otro socket |
+| `connect` (vuelta a QR) | QR nuevo, ciclo 3. Log: *«Half-paired credentials found… clearing them»* |
+| `connect?number=…` otra vez | código nuevo `5X1BW8T6`, ciclo 4 |
+| `restart` en mitad de la generación | `status: close`; **55 s después sigue en `close` y 0 generaciones nuevas** |
+| `connect` tras cortar un código | QR, ciclo 1 (credenciales a medias limpiadas) |
+| `logout` en mitad de una generación y `connect` | QR, y en el log **`isDeleting: false`** |
+
+La instancia de prueba se borró (0 filas). ⚠️ **Lo que NO se pudo probar sin un teléfono:** una
+vinculación completa después de un `logout` (el `515` seguido de `open`). Lo que está medido es que
+la marca vuelve a `false`, que era la única diferencia entre el intento que falló y el que vinculó.
+
+### Al desplegar, qué mirar
+
+1. `find dist -type f | wc -l` → **819** (815 + 4 de `vinculacion`), y **829** en el servidor (los 10
+   respaldos `main.js.bak-*` y `main.mjs.bak-*`, que el `rsync` excluye).
+2. `docker exec evolution-api grep -c "Half-paired credentials found" /evolution/dist/main.js` → 1.
+3. Las instancias, **iguales antes y después** del reinicio (`select name, "connectionStatus"`).
