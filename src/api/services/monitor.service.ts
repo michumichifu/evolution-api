@@ -181,6 +181,14 @@ export class WAMonitoringService {
       if (instanceDbId) {
         await this.cache.delete(instanceDbId);
       }
+    } else if (this.redis.REDIS.ENABLED && instanceDbId) {
+      // PD 2026-10-08: con Redis encendido, las claves de la sesión de Baileys (todo menos `creds`)
+      // viven en el hash `evolution:instance:<id>` AUNQUE `SAVE_INSTANCES` esté apagado: las
+      // escribe `useMultiFileAuthStatePrisma`. Aquí ya se borra la fila de `Session`, que es donde
+      // están las credenciales, así que ese hash queda sin dueño. Solo lo limpiaba `logout`, y
+      // `logout` no hace nada si la instancia ya está en `close`: borrar una instancia caída
+      // dejaba ~4 MB en Redis para siempre (17 hashes huérfanos el 8 oct 2026).
+      await this.cache.delete(instanceDbId);
     }
 
     if (this.providerSession?.ENABLED) {
