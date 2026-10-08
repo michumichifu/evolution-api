@@ -926,12 +926,29 @@ Personal» antigua (miles de mensajes):
 | **WhatsApp** | El panel llama antes a `logout`: el dispositivo vinculado desaparece del teléfono | Visto por Luis el 8 oct |
 | **Redis** | 🔴 **Aquí quedaba un resto.** Las claves de la sesión de Baileys viven en el hash `evolution:instance:<id>` y `cleaningUp` solo lo borraba con `CACHE_REDIS_SAVE_INSTANCES` encendido (aquí está apagado). Lo limpiaba `logout`, que **no hace nada si la instancia ya está en `close`** | **16 hashes huérfanos, 51 MB**, de instancias borradas estando caídas |
 
-**El arreglo:** `cleaningUp` borra ese hash siempre que Redis esté encendido. Probado: instancia
-parada con una clave puesta a mano en su hash → `delete` → el hash ya no existe.
+| **Copia de credenciales** | 🔴 **Y otro.** El watchdog guarda cada hora las credenciales de cada instancia en `/evolution/instances/.respaldos-pd/<id>.json`, para recuperar la sesión sin QR. Nadie borraba la copia al eliminar la instancia | **2 copias huérfanas** (la «Luis Personal» anterior y una «Dento Estetic 2 - QR» borrada esa noche) |
 
-⚠️ **Los 16 hashes antiguos NO se han tocado**: son de instancias que ya no existen, pero borrar es
-irreversible y antes hay que confirmar que la recuperación de sesiones («sesiones restaurables» del
-Manager) no los usa. Queda a decisión de Luis.
+**El arreglo** (`dcac1fb4`, 03:50 RD; corrige a `e2d4a218`, que lo había puesto en `cleaningUp`):
+`cleaningStoreData()` —que **solo corre al eliminar**— borra el hash de Redis y la copia de
+credenciales. 🔴 **No va en `cleaningUp()`**, que también corre cuando una sesión se cierra: ahí la
+instancia sigue existiendo y esas claves son las que permiten recuperarla sin QR con las
+credenciales de respaldo (`restoreSessions`, que solo mira instancias que **existen** en `Instance`).
+
+Probado en producción con dos instancias desechables: parada, con una clave puesta a mano en su hash
+y una copia falsa → `delete` → **ni hash ni copia**. Y un `logout` sobre otra que sigue existiendo
+**conserva** su copia.
+
+🟢 **Los restos antiguos, limpiados el 8 oct a las 03:52 RD** (Luis: *«borrar ese caché de instancias
+pasadas… Si ya no nos sirve y ya están borradas, ¿qué sentido tiene almacenarla? Revisa bien»*):
+**16 hashes** de Redis y **2 copias** de credenciales, solo los de un id que **no está** en
+`Instance` (comprobado uno a uno en el momento de borrar). Redis pasó de **75 claves y 46,05 MB a 59
+claves y 11,35 MB**. Quedan 7 hashes y 7 copias, todos de instancias vivas; 0 huérfanos. Las 11
+instancias, igual. Lo demás que hay en Redis (`groups`, `baileys`, las cachés de Chatwoot) lleva
+caducidad y se va solo. En el disco no había carpetas de instancia de sobra.
+
+⚠️ **Lo que NO se tocó, porque no son restos de instancias:** los 51 respaldos de código de `/root`
+(792 MB entre `dist-parcheado-respaldo-*` y `manager-dist-respaldo-*`). Son la vuelta atrás de cada
+despliegue; cuántos conservar es decisión aparte.
 
 ⚠️ **El borrado tarda en proporción al tamaño**: el backend contesta «Instance deleted» y borra
 después, por el evento `remove.instance`. Por eso el Manager espera a que `fetchInstances` deje de
