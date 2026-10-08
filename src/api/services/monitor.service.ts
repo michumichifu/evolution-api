@@ -181,14 +181,6 @@ export class WAMonitoringService {
       if (instanceDbId) {
         await this.cache.delete(instanceDbId);
       }
-    } else if (this.redis.REDIS.ENABLED && instanceDbId) {
-      // PD 2026-10-08: con Redis encendido, las claves de la sesión de Baileys (todo menos `creds`)
-      // viven en el hash `evolution:instance:<id>` AUNQUE `SAVE_INSTANCES` esté apagado: las
-      // escribe `useMultiFileAuthStatePrisma`. Aquí ya se borra la fila de `Session`, que es donde
-      // están las credenciales, así que ese hash queda sin dueño. Solo lo limpiaba `logout`, y
-      // `logout` no hace nada si la instancia ya está en `close`: borrar una instancia caída
-      // dejaba ~4 MB en Redis para siempre (17 hashes huérfanos el 8 oct 2026).
-      await this.cache.delete(instanceDbId);
     }
 
     if (this.providerSession?.ENABLED) {
@@ -211,6 +203,28 @@ export class WAMonitoringService {
     rmSync(join(INSTANCE_DIR, instance.id), { recursive: true, force: true });
 
     await this.prismaRepository.session.deleteMany({ where: { sessionId: instance.id } });
+
+    // PD 2026-10-08: con Redis encendido, las claves de la sesión de Baileys (todo menos `creds`)
+    // viven en el hash `evolution:instance:<id>` AUNQUE `SAVE_INSTANCES` esté apagado: las escribe
+    // `useMultiFileAuthStatePrisma`. Solo las limpiaba `logout`, que no hace nada si la instancia
+    // ya está en `close`: borrar una instancia caída dejaba hasta 30 MB en Redis para siempre (16
+    // hashes huérfanos, 51 MB, el 8 oct 2026). 🔴 Va AQUÍ y no en `cleaningUp()`, que también corre
+    // al cerrarse una sesión: ahí la instancia sigue existiendo y esas claves son las que permiten
+    // recuperarla sin QR con las credenciales de respaldo (`restoreSessions`). Aquí la instancia
+    // deja de existir, y sin fila en `Instance` no hay nada que recuperar.
+    if (this.redis.REDIS.ENABLED) {
+      try {
+        await this.cache.delete(instance.id);
+      } catch (error) {
+        this.logger.warn(`Could not delete the Redis session keys of "${instanceName}": ${error}`);
+      }
+    }
+
+    // PD 2026-10-08: y la copia de sus credenciales que guarda el watchdog cada hora para
+    // recuperar la sesión sin QR (`.respaldos-pd/<id>.json`, la misma carpeta que lee
+    // `restoreSessions` en el controlador). De una instancia borrada no se recupera nada, y es
+    // un archivo de credenciales: no se queda en el disco.
+    rmSync(join(INSTANCE_DIR, '.respaldos-pd', `${instance.id}.json`), { force: true });
 
     await this.prismaRepository.chat.deleteMany({ where: { instanceId: instance.id } });
     await this.prismaRepository.contact.deleteMany({ where: { instanceId: instance.id } });
