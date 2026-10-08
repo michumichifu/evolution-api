@@ -419,6 +419,16 @@ export class InstanceController {
       }
 
       if (state === 'close') {
+        // PD 2026-10-08: una instancia parada puede seguir saliendo «Conectando» en el Manager,
+        // porque la tarjeta pinta la fila de la base y esa se quedó en `connecting` (pasó tras los
+        // intentos fallidos de la noche del 8 oct). Antes «Reiniciar» contestaba aquí un error que
+        // el panel no sabía enseñar y la tarjeta seguía igual. Ahora deja la instancia limpia y
+        // parada de verdad: sin socket, sin QR a medias y con la fila en `close`. No toca las
+        // credenciales, así que a una instancia vinculada que esté caída no le hace perder nada.
+        if (typeof instance.detenerVinculacion === 'function') {
+          await instance.detenerVinculacion();
+          return { instance: { instanceName: instanceName, status: 'close' } };
+        }
         throw new BadRequestException('The "' + instanceName + '" instance is not connected');
       }
       this.logger.info(`Restarting instance: ${instanceName}`);
