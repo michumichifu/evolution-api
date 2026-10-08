@@ -953,3 +953,51 @@ despliegue; cuántos conservar es decisión aparte.
 ⚠️ **El borrado tarda en proporción al tamaño**: el backend contesta «Instance deleted» y borra
 después, por el evento `remove.instance`. Por eso el Manager espera a que `fetchInstances` deje de
 devolverla antes de decir «Eliminada» (`evolution-manager-v2`, `168fe73` y `6498e1e`).
+
+### 7. «Desconectar» no quitaba el dispositivo del teléfono (`1e6fe238`, 8 oct 2026, 04:03 RD)
+
+Luis pulsó «Desconectar» en «Luis Personal» a las 03:57:40: Evolution contestó «Instance logged out»,
+borró las credenciales y dejó la instancia en `close`, **y en su teléfono el dispositivo siguió en
+«Dispositivos vinculados»**, con «última actividad 3:49» y el botón de cerrar sesión, incluso tras
+forzar la detención de WhatsApp. A las 03:18, borrando la instancia con el mismo código, sí se quitó.
+
+**La causa:** `client.logout()` de Baileys manda el `remove-companion-device` con `sendNode` —que no
+espera respuesta— y llama a `end()` **acto seguido**. Es una carrera: si el socket se cierra antes de
+que WhatsApp procese la petición, el dispositivo se queda vinculado para siempre en el teléfono y
+aquí ya no hay credenciales con las que quitarlo.
+
+**El arreglo:** `logoutInstance()` manda antes ese mismo `iq` con `client.query(…, 8000)`, que **sí
+espera la respuesta**, y solo después llama a `client.logout()`. Si WhatsApp corta la conexión al
+quitar el dispositivo, la consulta se rechaza y también vale. En el log queda una de dos líneas:
+*«WhatsApp confirmed that the linked device was removed»* o *«no confirmation from WhatsApp for
+remove-companion-device… the phone may still list this device»*.
+
+⚠️ **Sin probar con un teléfono** al cierre de esta tanda. Y **el dispositivo que ya se quedó huérfano
+en el teléfono de Luis hay que quitarlo a mano** desde el propio teléfono.
+
+### 8. 🔴 Los respaldos de código del servidor se borraron (8 oct 2026, 04:06 RD)
+
+Decisión de Luis: *«quitar las copias de seguridad del código, pues si ya lo estamos trabajando aquí
+en local y ya tenemos respaldo en GitHub, sería lo ideal, para que José Luis no siga tocando eso. Por
+error»*. Se borraron **solo copias de código**, 2.489 MB:
+
+- `/root/dist-parcheado-respaldo-*.tgz` (9) y `/root/manager-dist-respaldo-*.tgz` (10);
+- `/root/respaldos/evolution-dist-parcheado-*.tgz` (2);
+- `/opt/evolution-api/dist-parcheado/main.js.bak-*` y `main.mjs.bak-*` (10);
+- las carpetas `/opt/evolution-api/dist-parcheado.bak-*` (5) y `manager-dist.bak-20260906`, y
+  `main.js.bak-20260903-bucle`.
+
+**No se tocó nada que no esté en GitHub:** los `docker-compose.yml.bak-*`, `evolution_db_backup_*.sql`,
+`lucy-instance-backup.json`, lo demás de `/root/respaldos` (los datos de la fusión de `@lid`) y los
+respaldos de n8n, Chatwoot y Marie.
+
+🔴 **Consecuencias para este documento:**
+
+- **Todas las rutas «Respaldo: `/root/…tgz`» que aparecen arriba ya no existen.** Son historia.
+- **La vuelta atrás es recompilar un commit**: `git checkout <commit>` + `npm run build` + `rsync` +
+  `docker restart evolution-api`. Ya no hay un `.tgz` que descomprimir.
+- **En el servidor hay 819 archivos, no 829**, y el `rsync` ya no necesita los `--exclude` (no hacen
+  daño si se dejan).
+- 🔴 **Un `main.js.bak-*` nuevo en `dist-parcheado` significa que alguien volvió a editar el
+  compilado a mano en el servidor.** Antes de desplegar, se mira qué cambió y se porta al fuente, o
+  el `rsync` lo borra (pasó el 8 sep y el 7 oct).
