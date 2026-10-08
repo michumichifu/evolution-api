@@ -884,3 +884,31 @@ la marca vuelve a `false`, que era la única diferencia entre el intento que fal
    respaldos `main.js.bak-*` y `main.mjs.bak-*`, que el `rsync` excluye).
 2. `docker exec evolution-api grep -c "Half-paired credentials found" /evolution/dist/main.js` → 1.
 3. Las instancias, **iguales antes y después** del reinicio (`select name, "connectionStatus"`).
+
+### 5. «Reiniciar» sobre una instancia parada que sale «Conectando» (`8ae95056`, 8 oct 2026, 02:44 RD)
+
+Luis: *«en caso de que una instancia haya quedado conectando, la reinicia para que quede, pues, no
+en ese estado. No generando otros QR o códigos»*. La tarjeta del Manager pinta **la fila de la
+base**, y esa puede quedarse en `connecting` con la instancia ya cerrada en memoria (pasó tras los
+intentos fallidos de la noche del 8 oct). `/instance/restart` contestaba ahí un `BadRequest` («is not
+connected») que el `catch` devolvía como `{error: true, message: "[object Object]"}` con un 200, y
+la tarjeta seguía igual.
+
+Ahora, con el estado en `close`, llama también a `detenerVinculacion()`: retira el socket que quede,
+vacía el QR y pone la fila en `close`. **No toca las credenciales**, así que a una instancia
+vinculada que esté caída no le hace perder nada (tampoco la reconecta: eso es «Generar QR»).
+
+Lo que hace «Reiniciar» según el caso, desde este commit:
+
+| La instancia está… | «Reiniciar» hace |
+|---|---|
+| conectada (`open`) | lo de siempre: cierra y reabre la conexión con la misma sesión, sin QR |
+| generando QR o códigos (`connecting`, sin emparejar) | corta la generación y la deja en `close` |
+| parada (`close`), salga como salga en la tarjeta | la deja limpia y con la fila en `close` |
+
+**Comprobado en producción** con `zz-prueba-reiniciar`: fila forzada a `connecting` con la memoria en
+`close` → `restart` → `{"status":"close"}` y la fila en `close`. Después siguió generando códigos con
+normalidad, y tres peticiones seguidas del mismo código (lo que hace ahora el Manager cada 5 s)
+devolvieron el mismo código **sin abrir ningún socket**. Md5 del `main.js` en el servidor:
+`856322cd50ed8258bb29fdf200b58dce`. Las 11 instancias, igual antes y después del reinicio (el tercero
+de la madrugada: 02:16, 02:22 y 02:44).
