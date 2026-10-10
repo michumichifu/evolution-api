@@ -209,6 +209,43 @@ como `CustomAttributeDefinition` (`contact_attribute`) en las cinco cuentas.
 /opt/evolution-api/dist-parcheado.bak-20260905-preusuario   antes del de los atributos
 ```
 
+### 🆕 Quien tiene nombre de usuario: el par se le pide a WhatsApp con el teléfono (10 oct 2026)
+
+**El caso.** Dental Shine, 9 oct: de los tres registrados que escribieron «ya me registré», dos
+llegaron como `<id>@lid` sin `remoteJidAlt` y sin par en el mapa de Baileys. `resolverTelefonoDeLid`
+no podía hacer nada, Chatwoot los guardó como otro contacto y la Hoja de Control, que busca por el
+teléfono del formulario, abría una conversación en blanco. Luis lo enseñó en pantalla:
+`wa.me/18494263956` abre el chat de `@lisbeth.baez.735`. 🔴 **Regla de Luis: quien tiene el número
+oculto tiene nombre de usuario, siempre; y WhatsApp pasa del teléfono a la cuenta.** Al revés (del
+`@lid` al teléfono) WhatsApp no contesta: hacen falta teléfonos candidatos.
+
+**Qué se hizo** (`whatsapp.baileys.service.ts`):
+
+1. **`conLidDeCadaTelefono`**: `POST /chat/whatsappNumbers/<instancia>` devuelve ahora el **`lid`** de
+   cada teléfono que existe. Lo pide con `signalRepository.lidMapping.getLIDsForPNs`, que pregunta por
+   USync y **guarda el par en los dos sentidos** (`lid-mapping-<tel>` y `lid-mapping-<lid>_reverse`,
+   campos del hash `evolution:instance:<id>` de Redis).
+2. **`aprenderLidsDeLosLeadsRecientes`**: cuando entra un mensaje **entrante y de ahora** por un
+   `@lid` sin par, se leen los registros de las **últimas 48 h** de las Hojas de Control de la cuenta
+   de Chatwoot de esa instancia (`GET …/pd/leadboards` y `…/pd/leads?leadboard_id=`, con el token que
+   la instancia ya tiene), se pide el `lid` de esos teléfonos y se vuelve a mirar el mapa. Si era uno
+   de ellos, el mensaje se guarda y se manda a Chatwoot **con el teléfono**.
+
+🔴 **Con freno, a propósito:** preguntar por muchos números seguidos es lo que hace un verificador
+masivo. 48 h de registros, 40 teléfonos por vez, cada teléfono una vez cada 6 h, cada `@lid`
+desconocido una vez cada 10 min, 8 s de tope por petición. Los contadores viven en memoria: un
+reinicio los pone a cero (como mucho se repite una tanda).
+
+**Probado en producción (Dental Shine 1, 10 oct, 03:05 RD):** `whatsappNumbers` con los teléfonos del
+9 oct devolvió `18494263956 → 41940959645869@lid` y `18298854549 → 156130785366032@lid`, **los mismos
+`@lid` con que escribieron**; y en Redis quedaron `lid-mapping-41940959645869_reverse = 18494263956`
+y el de Elena. ⚠️ **La segunda parte no se ha visto con un mensaje real**: se sabrá con el primer
+registrado de número oculto que escriba (en el log, `… es …: encontrado entre los registros de la
+Hoja de Control`).
+
+**Respaldo:** `/root/dist-parcheado-respaldo-20261010-pre-lid.tgz`. Tras los dos reinicios, las 12
+instancias quedaron en el mismo estado que antes (`/root/instancias-antes-lid-20261010.txt`).
+
 ## 🔴 UN TIMEOUT DE RED BORRA LAS CREDENCIALES, Y ESO CUESTA UN QR POR CLIENTE (6 sep 2026)
 
 **El 6 de septiembre de 2026, un corte de red de 40 segundos dejó sin WhatsApp a cinco instancias.**

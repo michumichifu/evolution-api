@@ -1690,7 +1690,11 @@ export class BaileysStartupService extends ChannelStartupService {
 
           // PARCHE PD (10 sep 2026): si llega por su @lid y Baileys conoce su teléfono, se
           // guarda y se manda a Chatwoot con el teléfono. Ver `resolverTelefonoDeLid`.
-          await this.resolverTelefonoDeLid(messageRaw.key);
+          // PARCHE PD (10 oct 2026): y si Baileys NO lo conoce, se buscan los teléfonos de los
+          // registros recientes de la Hoja de Control. Solo en mensajes entrantes y de ahora.
+          const esEntranteDeAhora =
+            !messageRaw.key?.fromMe && Math.abs(Date.now() / 1000 - Number(messageRaw.messageTimestamp)) < 600;
+          await this.resolverTelefonoDeLid(messageRaw.key, esEntranteDeAhora);
 
           if (messageRaw.messageType === 'pollUpdateMessage') {
             const pollCreationKey = (messageRaw.message as any).pollUpdateMessage.pollCreationMessageKey;
@@ -5708,22 +5712,30 @@ export class BaileysStartupService extends ChannelStartupService {
    * Quien oculta de verdad su número no tiene par y sale igual que antes, con su `@lid` y su
    * usuario. Se muta la `key` a propósito, como el cambio que ya existía más abajo.
    */
-  private async resolverTelefonoDeLid(key: any): Promise<void> {
+  private async resolverTelefonoDeLid(key: any, buscarEnLeads = false): Promise<void> {
     const lid = key?.remoteJid;
     if (typeof lid !== 'string' || !lid.endsWith('@lid')) return;
 
     const esTelefono = (jid: unknown): jid is string => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
 
-    let telefono = esTelefono(key.remoteJidAlt) ? key.remoteJidAlt : undefined;
-
-    if (!telefono) {
+    const enElMapa = async (): Promise<string | undefined> => {
       try {
         const pn = await this.client?.signalRepository?.lidMapping?.getPNForLID(lid);
         // Viene con el dispositivo (`18494589854:0@s.whatsapp.net`): se deja solo el usuario.
-        if (pn) telefono = jidNormalizedUser(pn);
+        return pn ? jidNormalizedUser(pn) : undefined;
       } catch (error) {
         this.logger.warn(`No se pudo consultar el telefono de ${lid} en el mapa de Baileys: ${error?.message}`);
+        return undefined;
       }
+    };
+
+    let telefono = esTelefono(key.remoteJidAlt) ? key.remoteJidAlt : undefined;
+
+    if (!telefono) telefono = await enElMapa();
+
+    if (!telefono && buscarEnLeads && (await this.aprenderLidsDeLosLeadsRecientes(lid))) {
+      telefono = await enElMapa();
+      if (telefono) this.logger.info(`${lid} es ${telefono}: encontrado entre los registros de la Hoja de Control`);
     }
 
     if (!esTelefono(telefono)) return;
@@ -5731,6 +5743,75 @@ export class BaileysStartupService extends ChannelStartupService {
     key.remoteJid = telefono;
     key.remoteJidAlt = lid;
     key.addressingMode = 'pn';
+  }
+
+  /** Cuándo se buscó por última vez cada `@lid` que no apareció, para no repetirlo con cada mensaje suyo. */
+  private readonly lidsBuscadosEnLeads = new Map<string, number>();
+  /** Teléfonos de leads por los que ya se le preguntó a WhatsApp, con su hora. */
+  private readonly telefonosDeLeadsPreguntados = new Map<string, number>();
+
+  /**
+   * PARCHE PD (10 oct 2026). Llega un `@lid` que Baileys no conoce: se leen los registros de las
+   * últimas 48 h de las Hojas de Control de la cuenta de Chatwoot de esta instancia y se le pide a
+   * WhatsApp el `@lid` de esos teléfonos (`getLIDsForPNs`, que GUARDA cada par). Si el que escribe
+   * es uno de ellos, `getPNForLID` ya lo encuentra y el mensaje cae en el contacto del teléfono,
+   * que es por el que busca la Hoja de Control.
+   *
+   * Es el caso del formulario que abre WhatsApp solo: el registro entra en la Hoja y el «ya me
+   * registré» llega 7-20 s después. WhatsApp pasa del teléfono a la cuenta, nunca al revés: por
+   * eso hacen falta los teléfonos candidatos, y la Hoja es quien los tiene.
+   *
+   * 🔴 Con freno a propósito, porque preguntar por muchos números seguidos es lo que hace un
+   * verificador masivo: solo registros de 48 h, 40 teléfonos como mucho por vez, cada teléfono una
+   * vez cada 6 h y cada `@lid` desconocido una vez cada 10 min. Todo fallo se traga con un aviso:
+   * esto nunca puede retrasar ni tumbar la entrada de un mensaje (tope de 8 s por petición).
+   *
+   * Devuelve true si se le preguntó algo nuevo a WhatsApp.
+   */
+  private async aprenderLidsDeLosLeadsRecientes(lid: string): Promise<boolean> {
+    const cw = this.localChatwoot;
+    if (!this.configService.get<Chatwoot>('CHATWOOT').ENABLED || !cw?.enabled || !cw.url || !cw.token) return false;
+
+    const ahora = Date.now();
+    if (ahora - (this.lidsBuscadosEnLeads.get(lid) ?? 0) < 10 * 60 * 1000) return false;
+    this.lidsBuscadosEnLeads.set(lid, ahora);
+    if (this.lidsBuscadosEnLeads.size > 2000) this.lidsBuscadosEnLeads.clear();
+
+    try {
+      const base = `${String(cw.url).replace(/\/+$/, '')}/api/v1/accounts/${cw.accountId}/pd`;
+      const opciones = { headers: { api_access_token: cw.token }, timeout: 8000 };
+
+      const hojas = (await axios.get(`${base}/leadboards`, opciones)).data;
+      const listaDeHojas: any[] = Array.isArray(hojas) ? hojas : (hojas?.payload ?? []);
+
+      const desde = ahora / 1000 - 48 * 3600;
+      const candidatos = new Set<string>();
+      for (const hoja of listaDeHojas.slice(0, 10)) {
+        const leads = (
+          await axios.get(`${base}/leads`, { ...opciones, params: { leadboard_id: hoja.id, per_page: 100 } })
+        ).data;
+        for (const lead of leads?.payload ?? []) {
+          if (Number(lead?.created_at) < desde) continue;
+          let digitos = String(lead?.phone ?? '').replace(/\D/g, '');
+          // Un número de 10 dígitos es del plan norteamericano (RD incluido) sin su 1 delante.
+          if (digitos.length === 10) digitos = `1${digitos}`;
+          if (digitos.length < 11 || digitos.length > 15) continue;
+          if (ahora - (this.telefonosDeLeadsPreguntados.get(digitos) ?? 0) < 6 * 3600 * 1000) continue;
+          candidatos.add(digitos);
+        }
+      }
+
+      const telefonos = [...candidatos].slice(0, 40);
+      if (telefonos.length === 0) return false;
+      telefonos.forEach((t) => this.telefonosDeLeadsPreguntados.set(t, ahora));
+      if (this.telefonosDeLeadsPreguntados.size > 5000) this.telefonosDeLeadsPreguntados.clear();
+
+      await this.client?.signalRepository?.lidMapping?.getLIDsForPNs(telefonos.map((t) => `${t}@s.whatsapp.net`));
+      return true;
+    } catch (error) {
+      this.logger.warn(`No se pudo buscar ${lid} entre los registros de la Hoja de Control: ${error?.message}`);
+      return false;
+    }
   }
 
   private async syncChatwootLostMessages() {
