@@ -4585,7 +4585,44 @@ export class BaileysStartupService extends ChannelStartupService {
       );
     }
 
-    return onWhatsapp;
+    return this.conLidDeCadaTelefono(onWhatsapp);
+  }
+
+  /**
+   * PARCHE PD (10 oct 2026). A cada teléfono que existe se le pide a WhatsApp su `@lid`, y Baileys
+   * GUARDA el par en su mapa (`lid-mapping`). Eso es lo que le faltaba a `resolverTelefonoDeLid`.
+   *
+   * Quien tiene nombre de usuario y oculta su número escribe como `<id>@lid` sin `remoteJidAlt`, y
+   * el mapa de Baileys no trae su par porque nunca se le habló por el teléfono. Chatwoot lo guardaba
+   * como otro contacto y la Hoja de Control, que busca por el teléfono del formulario, abría una
+   * conversación en blanco. Pasó en Dental Shine el 9 oct: 2 de los 3 registrados que escribieron.
+   *
+   * WhatsApp sí pasa del teléfono a la cuenta (un `wa.me/<teléfono>` abre el chat del `@usuario`);
+   * al revés no. Por eso el par se pide AQUÍ, con el teléfono en la mano, antes de que llegue el
+   * mensaje: quien conoce el teléfono (un registro de formulario) llama a `/chat/whatsappNumbers`.
+   *
+   * Si la consulta falla, se devuelve la lista tal cual: esto no puede tumbar la comprobación.
+   */
+  private async conLidDeCadaTelefono(lista: OnWhatsAppDto[]): Promise<OnWhatsAppDto[]> {
+    const esTelefono = (jid: string) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
+    const telefonos = lista.filter((u) => u.exists && esTelefono(u.jid)).map((u) => u.jid);
+    if (telefonos.length === 0) return lista;
+
+    const lidDe = new Map<string, string>();
+    try {
+      const pares = await this.client?.signalRepository?.lidMapping?.getLIDsForPNs(telefonos);
+      for (const par of pares ?? []) {
+        if (par?.pn && par?.lid) lidDe.set(jidNormalizedUser(par.pn), jidNormalizedUser(par.lid));
+      }
+    } catch (error) {
+      this.logger.warn(`No se pudo pedir a WhatsApp el @lid de ${telefonos.length} telefono(s): ${error?.message}`);
+      return lista;
+    }
+
+    return lista.map((u) => {
+      const lid = esTelefono(u.jid) ? lidDe.get(u.jid) : undefined;
+      return lid ? new OnWhatsAppDto(u.jid, u.exists, u.number, u.name, lid) : u;
+    });
   }
 
   public async markMessageAsRead(data: ReadMessageDto) {
