@@ -56,6 +56,7 @@ import {
   StatusMessage,
   TypeButton,
 } from '@api/dto/sendMessage.dto';
+import { reconciliarLidsGuardados } from '@api/integrations/channel/whatsapp/reconciliar-lid';
 import { USyncUsernameProtocol } from '@api/integrations/channel/whatsapp/usync-username';
 import { chatwootImport } from '@api/integrations/chatbot/chatwoot/utils/chatwoot-import-helper';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
@@ -808,6 +809,9 @@ export class BaileysStartupService extends ChannelStartupService {
       // separate outages spread over months would exhaust the retries and the sixth one
       // would give up on the first try.
       this.timeoutRetries = 0;
+      // PARCHE PD (10 oct 2026): a los 3 min, con el historial ya dentro, se corrige lo guardado
+      // con un `@lid` cuyo teléfono ya se conoce. Ver `reconciliar-lid.ts`.
+      this.programarReconciliacionDeLids(3 * 60 * 1000);
       this.instance.wuid = this.client.user.id.replace(/:\d+/, '');
       try {
         const profilePic = await this.profilePicture(this.instance.wuid);
@@ -4623,6 +4627,9 @@ export class BaileysStartupService extends ChannelStartupService {
       return lista;
     }
 
+    // Se acaban de aprender pares: lo guardado de antes con esos `@lid` pasa a su teléfono.
+    if (lidDe.size > 0) this.programarReconciliacionDeLids();
+
     return lista.map((u) => {
       const lid = esTelefono(u.jid) ? lidDe.get(u.jid) : undefined;
       return lid ? new OnWhatsAppDto(u.jid, u.exists, u.number, u.name, lid) : u;
@@ -5743,6 +5750,9 @@ export class BaileysStartupService extends ChannelStartupService {
     key.remoteJid = telefono;
     key.remoteJidAlt = lid;
     key.addressingMode = 'pn';
+
+    // El par se conoce: lo que esa persona tuviera guardado de antes con el `@lid` se le une.
+    this.programarReconciliacionDeLids();
   }
 
   /** Cuándo se buscó por última vez cada `@lid` que no apareció, para no repetirlo con cada mensaje suyo. */
@@ -5811,6 +5821,79 @@ export class BaileysStartupService extends ChannelStartupService {
     } catch (error) {
       this.logger.warn(`No se pudo buscar ${lid} entre los registros de la Hoja de Control: ${error?.message}`);
       return false;
+    }
+  }
+
+  private temporizadorDeLids: NodeJS.Timeout | null = null;
+  private ultimaReconciliacionDeLids = 0;
+
+  /**
+   * PARCHE PD (10 oct 2026). Deja pedida UNA pasada de `reconciliarLidsGuardados`. Se llama desde
+   * donde se aprende un par (al abrir, al resolver un `@lid` que llega, al pedir el de un teléfono)
+   * y puede llamarse mil veces seguidas: con una pasada pendiente no hace nada, y entre dos pasadas
+   * dejan pasar 10 min, porque listar los `@lid` guardados recorre los mensajes de la instancia.
+   */
+  private programarReconciliacionDeLids(esperaMs = 60 * 1000): void {
+    if (this.temporizadorDeLids) return;
+    const minimo = this.ultimaReconciliacionDeLids + 10 * 60 * 1000 - Date.now();
+    this.temporizadorDeLids = setTimeout(
+      () => {
+        this.temporizadorDeLids = null;
+        this.ultimaReconciliacionDeLids = Date.now();
+        this.reconciliarLids().catch((error) =>
+          this.logger.warn(`No se pudo reconciliar los @lid guardados: ${error?.message}`),
+        );
+      },
+      Math.max(esperaMs, minimo),
+    );
+    this.temporizadorDeLids.unref?.();
+  }
+
+  /**
+   * El teléfono de un `@lid` según los mapas LOCALES de Baileys: el de esta instancia y, si no, el
+   * de las demás (el `@lid` es de la cuenta de WhatsApp, el mismo lo vea quien lo vea: el de José
+   * Luis era `127629516652546` en tres instancias). Nunca le pregunta nada a WhatsApp.
+   */
+  private async telefonoDeLidEnLosMapas(lid: string): Promise<string | undefined> {
+    const propias = [this as any];
+    const ajenas = Object.values(waMonitor?.waInstances ?? {}).filter((i: any) => i && i !== this);
+    for (const instancia of [...propias, ...ajenas]) {
+      try {
+        const pn = await instancia?.client?.signalRepository?.lidMapping?.getPNForLID(lid);
+        if (pn) return jidNormalizedUser(pn);
+      } catch {
+        // una instancia sin sesión no tiene mapa: se sigue con la siguiente
+      }
+    }
+    return undefined;
+  }
+
+  private async reconciliarLids(): Promise<void> {
+    if (this.configService.get<Database>('DATABASE').PROVIDER === 'mysql') return;
+    if (!this.client || !this.instanceId) return;
+
+    const resultado = await reconciliarLidsGuardados({
+      lidsGuardados: async () => {
+        const filas = await this.prismaRepository.$queryRaw<Array<{ lid: string }>>`
+          SELECT DISTINCT "key"->>'remoteJid' AS lid FROM "Message"
+          WHERE "instanceId" = ${this.instanceId} AND "key"->>'remoteJid' LIKE '%@lid'
+        `;
+        return filas.map((f) => f.lid);
+      },
+      telefonoDe: (lid) => this.telefonoDeLidEnLosMapas(lid),
+      mover: (lid, telefono) => this.prismaRepository.$executeRaw`
+        UPDATE "Message"
+        SET "key" = "key" || jsonb_build_object('remoteJid', ${telefono}::text, 'remoteJidAlt', ${lid}::text, 'addressingMode', 'pn')
+        WHERE "instanceId" = ${this.instanceId} AND "key"->>'remoteJid' = ${lid}
+      `,
+      avisar: (texto) => this.logger.warn(texto),
+    });
+
+    if (resultado.mensajes > 0 || resultado.fallidos > 0) {
+      this.logger.info(
+        `@lid guardados: ${resultado.mensajes} mensaje(s) de ${resultado.chats} chat(s) pasados a su telefono ` +
+          `(${resultado.revisados} revisados, ${resultado.fallidos} fallidos)`,
+      );
     }
   }
 
