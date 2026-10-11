@@ -828,8 +828,14 @@ export class ChannelStartupService {
             (array_agg(NULLIF("Message"."pushName", '') ORDER BY "Message"."messageTimestamp" DESC)
               FILTER (WHERE "Message"."key"->>'fromMe' = 'false'
                         AND NULLIF("Message"."pushName", '') IS NOT NULL
-                        AND "Message"."pushName" <> split_part("Message"."key"->>'remoteJid', '@', 1)))[1]
+                        AND "Message"."pushName" <> split_part("Message"."key"->>'remoteJid', '@', 1)
+                        -- PARCHE PD (11 oct 2026): un nombre hecho solo de cifras NO es un nombre. El
+                        -- historial de una vinculacion rellena el pushName que falta con el
+                        -- identificador (el lid sin su dominio); al pasar el chat a su telefono dejo
+                        -- de coincidir con el remoteJid y salia arriba como si fuera el nombre.
+                        AND "Message"."pushName" !~ '^[+0-9 ]{5,}$'))[1]
               as "ultimoNombre",
+            max("Message"."key"->>'remoteJidAlt') as "alterno",
             (array_agg('@' || ltrim("Message"."key"->>'remoteJidUsername', '@') ORDER BY "Message"."messageTimestamp" DESC)
               FILTER (WHERE "Message"."key"->>'remoteJidUsername' IS NOT NULL))[1]
               as "usuarioWa"
@@ -853,7 +859,14 @@ export class ChannelStartupService {
             CASE
               WHEN "Message"."key"->>'remoteJid' LIKE '%@g.us' THEN COALESCE("Chat"."name", "Contact"."pushName")
               -- NULLIF porque aqui lo vacio es cadena vacia, no NULL, y COALESCE no la salta.
-              ELSE COALESCE(NULLIF("Contact"."pushName", ''), "ultimosDatos"."ultimoNombre")
+              -- PARCHE PD (11 oct 2026): tampoco vale un contacto llamado con cifras (se guarda
+              -- asi cuando la agenda no trae nombre), y si el chat no tiene nombre se mira la
+              -- ficha guardada con su otro identificador (el lid de quien ya sale por telefono).
+              ELSE COALESCE(
+                NULLIF(CASE WHEN "Contact"."pushName" ~ '^[+0-9 ]{5,}$' THEN '' ELSE "Contact"."pushName" END, ''),
+                "ultimosDatos"."ultimoNombre",
+                NULLIF(CASE WHEN "ContactoAlterno"."pushName" ~ '^[+0-9 ]{5,}$' THEN '' ELSE "ContactoAlterno"."pushName" END, '')
+              )
             END as "pushName",
             "ultimosDatos"."usuarioWa" as "usuarioWa",
             "Contact"."profilePicUrl",
@@ -893,6 +906,7 @@ export class ChannelStartupService {
           LEFT JOIN "Contact" ON "Contact"."remoteJid" = "Message"."key"->>'remoteJid' AND "Contact"."instanceId" = "Message"."instanceId"
           LEFT JOIN "Chat" ON "Chat"."remoteJid" = "Message"."key"->>'remoteJid' AND "Chat"."instanceId" = "Message"."instanceId"
           LEFT JOIN "ultimosDatos" ON "ultimosDatos"."remoteJid" = "Message"."key"->>'remoteJid'
+          LEFT JOIN "Contact" AS "ContactoAlterno" ON "ContactoAlterno"."remoteJid" = "ultimosDatos"."alterno" AND "ContactoAlterno"."instanceId" = "Message"."instanceId"
           WHERE "Message"."instanceId" = ${this.instanceId}
           ${remoteJid ? Prisma.sql`AND "Message"."key"->>'remoteJid' = ${remoteJid}` : Prisma.sql``}
           ${timestampFilter}
