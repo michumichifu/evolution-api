@@ -52,3 +52,31 @@ export async function reconciliarLidsGuardados(piezas: PiezasDeReconciliar): Pro
 
   return resultado;
 }
+
+/**
+ * PARCHE PD (11 oct 2026): EL HISTORIAL DE UNA VINCULACIÓN TRAE EL TELÉFONO DE CADA CHAT, Y SE TIRABA.
+ *
+ * Baileys entrega cada conversación del historial como un contacto con `id`, `lid` y `phoneNumber`
+ * (`Utils/history.js`: `lid: chat.lidJid`, `phoneNumber: chat.pnJid`), pero la rc.9 no guarda ese
+ * par en su mapa y aquí solo se leía `id`. Un chat que llegaba direccionado por su `@lid` se
+ * guardaba como un «número» de 15 cifras con el teléfono delante. Pasó al vincular Dento Estetic
+ * el 8 oct: 35 chats así, y de 9 ya no se pudo recuperar nada porque esa cuenta salió de WhatsApp.
+ *
+ * Devuelve los pares que hay que guardar en el mapa ANTES de procesar los mensajes del lote.
+ */
+export function paresDelHistorial(
+  contactos: Array<{ id?: string | null; lid?: string | null; phoneNumber?: string | null }> | null | undefined,
+): Array<{ lid: string; pn: string }> {
+  const pares = new Map<string, string>();
+  const lidDe = (jid: unknown) => (typeof jid === 'string' && /^\d+(:\d+)?@lid$/.test(jid) ? jid : undefined);
+  const pnDe = (jid: unknown) =>
+    typeof jid === 'string' && /^\d{8,15}(:\d+)?@s\.whatsapp\.net$/.test(jid) ? jid : undefined;
+
+  for (const contacto of contactos ?? []) {
+    const lid = lidDe(contacto?.id) ?? lidDe(contacto?.lid);
+    const pn = pnDe(contacto?.id) ?? pnDe(contacto?.phoneNumber);
+    if (lid && pn) pares.set(lid, pn);
+  }
+
+  return [...pares].map(([lid, pn]) => ({ lid, pn }));
+}

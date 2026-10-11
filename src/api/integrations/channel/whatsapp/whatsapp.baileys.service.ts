@@ -56,7 +56,7 @@ import {
   StatusMessage,
   TypeButton,
 } from '@api/dto/sendMessage.dto';
-import { reconciliarLidsGuardados } from '@api/integrations/channel/whatsapp/reconciliar-lid';
+import { paresDelHistorial, reconciliarLidsGuardados } from '@api/integrations/channel/whatsapp/reconciliar-lid';
 import { USyncUsernameProtocol } from '@api/integrations/channel/whatsapp/usync-username';
 import { chatwootImport } from '@api/integrations/chatbot/chatwoot/utils/chatwoot-import-helper';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
@@ -1369,6 +1369,20 @@ export class BaileysStartupService extends ChannelStartupService {
         console.log(
           `recv ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (is latest: ${isLatest}, progress: ${progress}%), type: ${syncType}`,
         );
+
+        // PARCHE PD (11 oct 2026): el historial trae el teléfono de cada chat que llega por su
+        // `@lid`, y se tiraba. Se guarda en el mapa ANTES de procesar los mensajes del lote, para
+        // que `resolverTelefonoDeLid` los encuentre. Ver `paresDelHistorial`.
+        try {
+          const pares = paresDelHistorial(contacts as any);
+          if (pares.length > 0) {
+            await this.client?.signalRepository?.lidMapping?.storeLIDPNMappings(pares);
+            this.logger.info(`Historial: ${pares.length} par(es) @lid-telefono guardados en el mapa`);
+            this.programarReconciliacionDeLids();
+          }
+        } catch (error) {
+          this.logger.warn(`No se pudieron guardar los pares @lid-telefono del historial: ${error?.message}`);
+        }
 
         const instance: InstanceDto = { instanceName: this.instance.name };
 

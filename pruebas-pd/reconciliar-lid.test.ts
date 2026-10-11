@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { reconciliarLidsGuardados } from '../src/api/integrations/channel/whatsapp/reconciliar-lid';
+import { paresDelHistorial, reconciliarLidsGuardados } from '../src/api/integrations/channel/whatsapp/reconciliar-lid';
 
 const montar = (guardados: string[], mapa: Record<string, string | undefined>, mensajes: Record<string, number> = {}) => {
   const movidos: Array<[string, string]> = [];
@@ -104,5 +104,43 @@ describe('el servicio de Baileys sigue programando la reconciliación', () => {
 
   it('al pedirle a WhatsApp el @lid de un teléfono', () => {
     assert.match(cuerpo('private async conLidDeCadaTelefono('), /this\.programarReconciliacionDeLids\(/);
+  });
+});
+
+describe('paresDelHistorial', () => {
+  it('un chat que llega por su @lid trae su teléfono en phoneNumber', () => {
+    assert.deepEqual(paresDelHistorial([{ id: '209641749381308@lid', phoneNumber: '18095551234@s.whatsapp.net' }]), [
+      { lid: '209641749381308@lid', pn: '18095551234@s.whatsapp.net' },
+    ]);
+  });
+
+  it('un chat que llega por su teléfono trae su @lid en lid', () => {
+    assert.deepEqual(paresDelHistorial([{ id: '18095551234@s.whatsapp.net', lid: '209641749381308@lid' }]), [
+      { lid: '209641749381308@lid', pn: '18095551234@s.whatsapp.net' },
+    ]);
+  });
+
+  it('sin las dos mitades no hay par, y los grupos no cuentan', () => {
+    assert.deepEqual(
+      paresDelHistorial([
+        { id: '209641749381308@lid' },
+        { id: '18095551234@s.whatsapp.net' },
+        { id: '120363@g.us', lid: '1@lid' },
+        { id: '1@lid', phoneNumber: '2@lid' },
+      ]),
+      [],
+    );
+    assert.deepEqual(paresDelHistorial(null), []);
+  });
+
+  it('el manejador del historial los guarda antes de procesar los mensajes', () => {
+    const fuente = readFileSync(
+      join(__dirname, '../src/api/integrations/channel/whatsapp/whatsapp.baileys.service.ts'),
+      'utf8',
+    );
+    const desde = fuente.indexOf("'messaging-history.set': async");
+    const guarda = fuente.indexOf('storeLIDPNMappings(pares)', desde);
+    const procesa = fuente.indexOf('timestampLimitToImport', desde);
+    assert.ok(guarda > desde && guarda < procesa);
   });
 });
