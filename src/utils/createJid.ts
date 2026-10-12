@@ -42,6 +42,27 @@ export function esBsuid(valor: string): boolean {
   return /^[A-Z]{2}(\.ENT)?\.[A-Za-z0-9]{1,128}$/.test(String(valor || '').split('@')[0]);
 }
 
+// 🔴 PARCHE PD (12 oct 2026): A UN `@lid` NO SE LE PUEDE ESCRIBIR POR LA CLOUD API.
+// Cuando el MISMO número tiene dos instancias —una por QR y otra por la Cloud API (coexistencia)—
+// las dos comparten la ficha del contacto en Chatwoot, y la de QR le pone como `identifier` su
+// `@lid` (`259021072289830@lid`). Al responder desde la bandeja de la Cloud API, `receiveWebhook`
+// tomaba ese `identifier` como destino y la Cloud API lo mandaba al «teléfono» 259021072289830:
+// Meta contestaba 131026 «Message undeliverable» y el mensaje se perdía. Pasó en Dento Estetic:
+// de las dos burbujas de una respuesta del bot, la primera salió (la ficha aún tenía el teléfono)
+// y la segunda no (la instancia de QR acababa de reescribir la ficha con el `@lid`).
+// Un `@lid` solo sirve en la conexión que lo vio (Baileys). En la Cloud API manda el teléfono.
+export function destinoDesdeChatwoot(
+  remitente: { identifier?: string | null; phone_number?: string | null } | null | undefined,
+  esCloudApi: boolean,
+): string | undefined {
+  const identificador = remitente?.identifier || undefined;
+  const telefono = remitente?.phone_number ? String(remitente.phone_number).replace('+', '') : undefined;
+  if (esCloudApi && identificador && identificador.includes('@lid') && telefono) {
+    return telefono;
+  }
+  return identificador || telefono;
+}
+
 export function createJid(number: string): string {
   number = number.replace(/:\d+/, '');
 

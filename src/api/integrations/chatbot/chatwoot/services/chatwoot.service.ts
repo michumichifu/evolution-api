@@ -20,7 +20,7 @@ import ChatwootClient, {
 } from '@figuro/chatwoot-sdk';
 import { request as chatwootRequest } from '@figuro/chatwoot-sdk/dist/core/request';
 import { Chatwoot as ChatwootModel, Contact as ContactModel, Message as MessageModel } from '@prisma/client';
-import { esBsuid } from '@utils/createJid';
+import { destinoDesdeChatwoot, esBsuid } from '@utils/createJid';
 import i18next from '@utils/i18n';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -1914,8 +1914,11 @@ export class ChatwootService {
         return { message: 'bot' };
       }
 
-      const chatId =
-        body.conversation.meta.sender?.identifier || body.conversation.meta.sender?.phone_number.replace('+', '');
+      // 🔴 PARCHE PD (12 oct 2026): por la Cloud API no se escribe a un `@lid` (ver `destinoDesdeChatwoot`).
+      const chatId = destinoDesdeChatwoot(
+        body.conversation.meta.sender,
+        this.waMonitor.waInstances[instance.instanceName]?.integration === Integration.WHATSAPP_BUSINESS,
+      );
       // Chatwoot to Whatsapp
       const messageReceived = body.content
         ? body.content
