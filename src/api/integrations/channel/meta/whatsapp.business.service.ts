@@ -144,11 +144,28 @@ export class BusinessStartupService extends ChannelStartupService {
       // PD: quien oculta su número en Cloud API no manda `from`, sino `from_user_id` (o el
       // `user_id` del contacto); en los estados, `recipient_user_id`. Sin esto el evento se
       // quedaba sin remitente y la conversación no se creaba.
-      const senderJid = createJid(
-        content.messages
-          ? content.messages[0].from || content.messages[0].from_user_id || content.contacts?.[0]?.user_id
-          : content.statuses[0]?.recipient_id || content.statuses[0]?.recipient_user_id,
-      );
+      const telefonoMeta = content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id;
+      const bsuidMeta = content.messages
+        ? content.messages[0].from_user_id || content.contacts?.[0]?.user_id
+        : content.statuses[0]?.recipient_user_id;
+      let senderJid = createJid(telefonoMeta || bsuidMeta);
+
+      // 🔴 PARCHE PD (15 oct 2026): QUIEN EMPEZÓ CON EL NÚMERO OCULTO SIGUE SIENDO LA MISMA PERSONA.
+      // Meta manda a TODOS su identificador fijo (`user_id`, `DO.1148659354160225`) y, si lo tiene visible, el
+      // teléfono (`from`). A Maricela (Dento Estetic, campaña de prótesis) le llegó primero solo el
+      // identificador: Evolution abrió el chat con él y en Chatwoot nació «Mary» sin teléfono. Cuando le
+      // escribimos a su teléfono (la confirmación de Panel Dental, por QR) Meta empezó a mandar también el
+      // `from`, Evolution cambió a ese número y su «Ok gracias» abrió OTRO contacto y otra conversación. Ahora:
+      // si ya hay mensajes de esta instancia con su identificador fijo, se sigue con él aunque llegue el teléfono.
+      // A quien escribió siempre con el número visible no le cambia nada: no tiene mensajes con el identificador.
+      if (telefonoMeta && bsuidMeta) {
+        const jidFijo = createJid(bsuidMeta);
+        const yaEmpezoAsi = await this.prismaRepository.message.findFirst({
+          where: { instanceId: this.instanceId, key: { path: ['remoteJid'], equals: jidFijo } },
+          select: { id: true },
+        });
+        if (yaEmpezoAsi) senderJid = jidFijo;
+      }
       this.phoneNumber = senderJid;
 
       await this.eventHandler(content, senderJid);

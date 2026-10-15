@@ -409,9 +409,20 @@ export class ChatwootService {
 
       return contact;
     } catch (error) {
-      if ((error.status === 422 || error.response?.status === 422) && jid) {
-        this.logger.warn(`Contact with identifier ${jid} creation failed (422). Checking if it already exists...`);
-        const existingContact = await this.findContactByIdentifier(instance, jid);
+      // 🔴 PARCHE PD (15 oct 2026): DOS INSTANCIAS DEL MISMO NÚMERO CREAN EL MISMO CONTACTO A LA VEZ.
+      // El primer mensaje de un paciente entra en el mismo segundo por «… 2 - QR» y por «… 2 - API» (es la
+      // coexistencia), y las dos piden crear su contacto en la misma cuenta de Chatwoot. La que pierde no recibe
+      // un 422 sino un **500** (el índice único de la base salta dentro de Chatwoot), y antes solo se miraba el
+      // 422: el contacto «no se creaba ni se encontraba» y **el mensaje no llegaba a la bandeja de la API**. Le
+      // pasó a Miguel Hiciano, primer paciente de la campaña de prótesis de Dento Estetic (15 oct, 01:16 RD).
+      // Ahora, ante un 422 o un 500, se espera un instante a que la otra termine y se busca el que ya existe.
+      const st = error.status || error.response?.status;
+      if ((st === 422 || st === 500) && jid) {
+        this.logger.warn(`Contact with identifier ${jid} creation failed (${st}). Checking if it already exists...`);
+        if (st === 500) await new Promise((r) => setTimeout(r, 1500));
+        const existingContact =
+          (await this.findContactByIdentifier(instance, jid)) ||
+          (!isGroup && phoneNumber && !jid.includes('@lid') ? await this.findContact(instance, phoneNumber) : null);
         if (existingContact) {
           const contactId = existingContact.id;
           await this.addLabelToContact(this.provider.nameInbox, contactId);
