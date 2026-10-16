@@ -1677,6 +1677,12 @@ export class ChatwootService {
       atributos = { ...filteredReplyToIds, ...atributos };
     }
 
+    // PD (16 oct 2026): la misma marca `external_echo` que lleva el camino del texto (ver el
+    // comentario largo de `createMessage`). Faltaba aquí, en el de los adjuntos: una foto, un audio
+    // o un PDF mandado desde el teléfono o WhatsApp Web salía en Chatwoot «Enviado por» el dueño
+    // del token (el «Tips de cepillado.pdf» de Zenithe, 16 oct 17:07).
+    if (messageType === 'outgoing') atributos.external_echo = true;
+
     if (Object.keys(atributos).length > 0) {
       data.append('content_attributes', JSON.stringify(atributos));
     }
