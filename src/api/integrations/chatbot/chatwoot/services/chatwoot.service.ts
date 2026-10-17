@@ -7,7 +7,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { CacheService } from '@api/services/cache.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { Events, Integration } from '@api/types/wa.types';
-import { Chatwoot, ConfigService, Database, HttpServer } from '@config/env.config';
+import { Chatwoot, ConfigService, Database, HttpServer, WaBusiness } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import ChatwootClient, {
   ChatwootAPIConfig,
@@ -22,6 +22,7 @@ import { request as chatwootRequest } from '@figuro/chatwoot-sdk/dist/core/reque
 import { Chatwoot as ChatwootModel, Contact as ContactModel, Message as MessageModel } from '@prisma/client';
 import { destinoDesdeChatwoot, esBsuid } from '@utils/createJid';
 import i18next from '@utils/i18n';
+import { componentesDePlantilla, errorDeMeta, pideImagenDeEjemplo } from '@utils/pdPlantillaWhatsapp';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
 import { WAMessageContent, WAMessageKey } from 'baileys';
@@ -2803,18 +2804,17 @@ export class ChatwootService {
     instance: InstanceDto,
     body: any,
   ): Promise<boolean> {
-    const valores = Object.entries(plantilla.params ?? {});
-
-    // Una clave numérica es un parámetro posicional; cualquier otra, uno con nombre.
-    const parameters = valores.map(([clave, valor]) =>
-      /^\d+$/.test(clave)
-        ? { type: 'text', text: String(valor) }
-        : { type: 'text', parameter_name: clave, text: String(valor) },
-    );
-
-    const components = parameters.length ? [{ type: 'body', parameters }] : [];
-
     try {
+      // PD (17 oct 2026): las variables llegan agrupadas por parte (`body`, `header`, `buttons`)
+      // desde el selector nuevo de Chatwoot; antes llegaban planas. Ver `pdPlantillaWhatsapp.ts`.
+      const params = { ...(plantilla.params ?? {}) };
+      if (pideImagenDeEjemplo(params)) {
+        const mediaId = await this.imagenDeEjemploDePlantilla(waInstance, plantilla, params.header?.media_type);
+        if (mediaId) params.header = { ...params.header, media_id: mediaId };
+      }
+
+      const components = componentesDePlantilla(params);
+
       const messageSent = await waInstance.templateMessage(
         {
           number: chatId,
@@ -2825,7 +2825,16 @@ export class ChatwootService {
         true,
       );
 
-      if (!messageSent) throw new Error('Template not sent');
+      // 🔴 Meta devuelve el error COMO RESPUESTA, no como excepción: `templateMessage` lo pasa tal
+      // cual. Un envío de verdad trae el id del mensaje (`key.id`); sin él, no salió.
+      if (!messageSent?.key?.id) {
+        const motivo = errorDeMeta(messageSent);
+        this.logger.error(`[PD] Meta rechazó la plantilla ${plantilla.name}: ${motivo}`);
+        await this.marcarMensajeFallido(instance, body, `Meta no envió la plantilla: ${motivo}`);
+        // Se da por tratado: mandar el texto suelto en su lugar llegaría sin imagen ni botones y,
+        // fuera de la ventana de 24 h, tampoco llegaría. Mejor que el agente vea el fallo en rojo.
+        return true;
+      }
 
       this.logger.info(`[PD] plantilla enviada por la Cloud API: ${plantilla.name}`);
 
@@ -2842,9 +2851,99 @@ export class ChatwootService {
 
       return true;
     } catch (error) {
-      // No se traga el fallo: si la plantilla no sale, hay que verlo en el log.
+      // No se traga el fallo: si la plantilla no sale, hay que verlo en el log Y en Chatwoot.
       this.logger.error(`[PD] no se pudo enviar la plantilla ${plantilla.name}: ${error?.message ?? error}`);
-      return false;
+      await this.marcarMensajeFallido(instance, body, `No se pudo enviar la plantilla: ${error?.message ?? error}`);
+      return true;
+    }
+  }
+
+  /**
+   * PD (17 oct 2026): la imagen de EJEMPLO del encabezado, subida al número, para mandar la plantilla
+   * con ella. Es la que se subió al crear la plantilla, y con ella una plantilla de «imagen + texto»
+   * se manda sin que el agente tenga que pegar ningún enlace (Luis: «seleccionar la plantilla y
+   * enviar»). Devuelve el id del archivo en Meta.
+   *
+   * 🔴 No se manda el enlace del ejemplo tal cual: Meta no se lo descarga a sí misma (131053, 403).
+   * Se descarga aquí y se sube a `/<número>/media`. El id vale 30 días; se guarda 12 horas por
+   * plantilla para no subir la misma imagen en cada envío.
+   */
+  private static idsDeEjemplo = new Map<string, { id: string; hasta: number }>();
+
+  private async imagenDeEjemploDePlantilla(
+    waInstance: any,
+    plantilla: { name: string; language: string },
+    tipo?: string,
+  ): Promise<string | undefined> {
+    try {
+      const datos = waInstance?.instance;
+      if (!datos?.businessId || !datos?.token || !datos?.number) return undefined;
+
+      const clave = `${datos.number}|${plantilla.name}|${plantilla.language}`;
+      const guardado = ChatwootService.idsDeEjemplo.get(clave);
+      if (guardado && guardado.hasta > Date.now()) return guardado.id;
+
+      const urlServer = this.configService.get<WaBusiness>('WA_BUSINESS').URL;
+      const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
+      const autorizacion = { Authorization: `Bearer ${datos.token}` };
+
+      const respuesta = await axios.get(`${urlServer}/${version}/${datos.businessId}/message_templates`, {
+        params: { name: plantilla.name, fields: 'name,language,components' },
+        headers: autorizacion,
+        timeout: 10000,
+      });
+      const lista: any[] = respuesta?.data?.data ?? [];
+      const encontrada =
+        lista.find((t) => t.name === plantilla.name && t.language === plantilla.language) ??
+        lista.find((t) => t.name === plantilla.name);
+      const enlace = encontrada?.components?.find((c: any) => c.type === 'HEADER')?.example?.header_handle?.[0];
+      if (!enlace) return undefined;
+
+      const archivo = await axios.get(enlace, { responseType: 'arraybuffer', timeout: 20000 });
+      const mime =
+        String(archivo.headers?.['content-type'] || '').split(';')[0] ||
+        (tipo === 'video' ? 'video/mp4' : tipo === 'document' ? 'application/pdf' : 'image/jpeg');
+
+      const formulario = new FormData();
+      formulario.append('messaging_product', 'whatsapp');
+      formulario.append('type', mime);
+      formulario.append('file', Buffer.from(archivo.data), {
+        filename: `${plantilla.name}.${mimeTypes.extension(mime) || 'bin'}`,
+        contentType: mime,
+      });
+      const subida = await axios.post(`${urlServer}/${version}/${datos.number}/media`, formulario, {
+        headers: { ...autorizacion, ...formulario.getHeaders() },
+        maxBodyLength: Infinity,
+        timeout: 30000,
+      });
+
+      const id = subida?.data?.id;
+      if (id) ChatwootService.idsDeEjemplo.set(clave, { id, hasta: Date.now() + 12 * 60 * 60 * 1000 });
+      return id;
+    } catch (error) {
+      this.logger.error(
+        `[PD] no se pudo preparar la imagen de ejemplo de ${plantilla.name}: ${error?.message ?? error}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * PD (17 oct 2026): deja el mensaje de Chatwoot en «fallido», con el motivo. Sin esto, una
+   * plantilla que Meta rechazaba se quedaba como enviada y el agente no se enteraba nunca. Usa el
+   * cambio de estado que Chatwoot permite en las bandejas de API.
+   */
+  private async marcarMensajeFallido(instance: InstanceDto, body: any, motivo: string): Promise<void> {
+    try {
+      if (!body?.id || !body?.conversation?.id) return;
+      await this.clientCw(instance);
+      await axios.patch(
+        `${this.provider.url}/api/v1/accounts/${this.provider.accountId}/conversations/${body.conversation.id}/messages/${body.id}`,
+        { status: 'failed', external_error: motivo.slice(0, 250) },
+        { headers: { api_access_token: this.provider.token }, timeout: 10000 },
+      );
+    } catch (error) {
+      this.logger.error(`[PD] no se pudo marcar como fallido el mensaje ${body?.id}: ${error?.message ?? error}`);
     }
   }
 
