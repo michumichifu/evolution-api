@@ -158,13 +158,23 @@ export class BusinessStartupService extends ChannelStartupService {
       // `from`, Evolution cambió a ese número y su «Ok gracias» abrió OTRO contacto y otra conversación. Ahora:
       // si ya hay mensajes de esta instancia con su identificador fijo, se sigue con él aunque llegue el teléfono.
       // A quien escribió siempre con el número visible no le cambia nada: no tiene mensajes con el identificador.
+      // 🔴 18 oct 2026: cuenta solo lo que ESCRIBIÓ la persona, y su PRIMER mensaje. Antes bastaba cualquier mensaje
+      // con el identificador, también uno nuestro: la plantilla de prueba que se le mandó a Luis a su identificador
+      // (13:45) lo pasó a él entero, con número visible desde siempre, y el seguimiento de Vicky dejó de verlo.
       if (telefonoMeta && bsuidMeta) {
         const jidFijo = createJid(bsuidMeta);
-        const yaEmpezoAsi = await this.prismaRepository.message.findFirst({
-          where: { instanceId: this.instanceId, key: { path: ['remoteJid'], equals: jidFijo } },
-          select: { id: true },
-        });
-        if (yaEmpezoAsi) senderJid = jidFijo;
+        const primeroDe = (jid: string) =>
+          this.prismaRepository.message.findFirst({
+            where: {
+              instanceId: this.instanceId,
+              AND: [{ key: { path: ['remoteJid'], equals: jid } }, { key: { path: ['fromMe'], equals: false } }],
+            },
+            orderBy: { messageTimestamp: 'asc' },
+            select: { messageTimestamp: true },
+          });
+        const [conIdentificador, conTelefono] = await Promise.all([primeroDe(jidFijo), primeroDe(senderJid)]);
+        if (conIdentificador && (!conTelefono || conIdentificador.messageTimestamp < conTelefono.messageTimestamp))
+          senderJid = jidFijo;
       }
       this.phoneNumber = senderJid;
 
