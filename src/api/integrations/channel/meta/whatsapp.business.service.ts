@@ -23,6 +23,7 @@ import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
 import { createJid, esBsuid } from '@utils/createJid';
+import { respaldoDePlantilla, textoDePlantilla } from '@utils/pdPlantillaWhatsapp';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -80,6 +81,39 @@ export class BusinessStartupService extends ChannelStartupService {
   // `recipient` y NO mandar `to`. Con `to` y los dígitos sueltos se escribía a un número que no existe.
   private destinatarioMeta(number: string): { to?: string; recipient?: string } {
     return esBsuid(number) ? { recipient: String(number).split('@')[0] } : { to: number.replace(/\D/g, '') };
+  }
+
+  // PD (19 oct 2026): la definición de una plantilla, para guardar su texto real al enviarla
+  // (`textoDePlantilla`). 15 minutos en memoria: una tanda de recordatorios no pregunta a Meta una
+  // vez por mensaje. Con tope de 5 s y sin lanzar: si Meta no contesta, se guarda el respaldo.
+  private static readonly plantillasDeMeta = new Map<string, { hasta: number; definicion: any }>();
+
+  private async definicionDePlantilla(nombre: string, idioma?: string): Promise<any | undefined> {
+    const waba = this.instance?.businessId;
+    if (!waba || !nombre) return undefined;
+
+    const clave = `${waba}|${nombre}|${idioma || ''}`;
+    const guardada = BusinessStartupService.plantillasDeMeta.get(clave);
+    if (guardada && guardada.hasta > Date.now()) return guardada.definicion;
+
+    try {
+      const urlServer = this.configService.get<WaBusiness>('WA_BUSINESS').URL;
+      const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
+      const { data } = await axios.get(`${urlServer}/${version}/${waba}/message_templates`, {
+        params: { name: nombre, fields: 'name,language,components,parameter_format' },
+        headers: { Authorization: `Bearer ${this.token}` },
+        timeout: 5000,
+      });
+      const lista = (Array.isArray(data?.data) ? data.data : []).filter((t: any) => t?.name === nombre);
+      const definicion = lista.find((t: any) => t.language === idioma) || lista[0];
+      if (definicion) {
+        BusinessStartupService.plantillasDeMeta.set(clave, { hasta: Date.now() + 15 * 60 * 1000, definicion });
+      }
+      return definicion;
+    } catch (e) {
+      this.logger.warn(`No se pudo leer la plantilla «${nombre}» de Meta para guardar su texto: ${e?.message}`);
+      return undefined;
+    }
   }
 
   private async post(message: any, params: string) {
@@ -1226,8 +1260,16 @@ export class BusinessStartupService extends ChannelStartupService {
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
-          message = { conversation: `▶️${message['template']['name']}◀️` };
-          return await this.post(content, 'messages');
+          const enviado = await this.post(content, 'messages');
+          // PD (19 oct 2026): lo que se guarda y lo que ve Chatwoot es el TEXTO de la plantilla, no
+          // `▶️<nombre>◀️`. Luis vio en la conversación de una paciente «▶️recordatorio2horas_cita◀️»
+          // en vez del recordatorio de 2 horas. Se arma después de enviar, para no retrasar el envío.
+          const plantilla = content.template;
+          const definicion = await this.definicionDePlantilla(plantilla.name, plantilla.language?.code);
+          message = {
+            conversation: textoDePlantilla(definicion, plantilla.components) ?? respaldoDePlantilla(plantilla.name),
+          };
+          return enviado;
         }
       })();
 

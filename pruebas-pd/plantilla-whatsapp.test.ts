@@ -4,7 +4,13 @@
  *
  *   npx tsx --test pruebas-pd/plantilla-whatsapp.test.ts
  */
-import { componentesDePlantilla, errorDeMeta, pideImagenDeEjemplo } from '@utils/pdPlantillaWhatsapp';
+import {
+  componentesDePlantilla,
+  errorDeMeta,
+  pideImagenDeEjemplo,
+  respaldoDePlantilla,
+  textoDePlantilla,
+} from '@utils/pdPlantillaWhatsapp';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -12,7 +18,13 @@ describe('componentesDePlantilla', () => {
   it('el envío REAL que falló el 17 oct (mensaje 433470): cinco variables agrupadas en body', () => {
     // Antes salía UN parámetro llamado «body» y Meta respondía #132000 (1 frente a 5).
     const real = {
-      body: { hora: '5PM', fecha: 'Sábado 17 Octubre', motivo: 'Consulta', nombre: 'Luis', clinica: 'Proyección Digital' },
+      body: {
+        hora: '5PM',
+        fecha: 'Sábado 17 Octubre',
+        motivo: 'Consulta',
+        nombre: 'Luis',
+        clinica: 'Proyección Digital',
+      },
     };
     const c = componentesDePlantilla(real);
     assert.equal(c.length, 1);
@@ -85,8 +97,90 @@ describe('pideImagenDeEjemplo', () => {
 describe('errorDeMeta', () => {
   it('junta el mensaje y el detalle', () => {
     assert.equal(
-      errorDeMeta({ message: '(#132000) Number of parameters does not match', error_data: { details: 'body: 1 vs 5' } }),
+      errorDeMeta({
+        message: '(#132000) Number of parameters does not match',
+        error_data: { details: 'body: 1 vs 5' },
+      }),
       '(#132000) Number of parameters does not match — body: 1 vs 5',
     );
+  });
+});
+
+describe('textoDePlantilla (19 oct 2026)', () => {
+  // La definición real de `recordatorio_2_horas_cita` de Dento Estetic, como la da Meta.
+  const recordatorio = {
+    name: 'recordatorio_2_horas_cita',
+    language: 'es',
+    parameter_format: 'NAMED',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{nombre}}, te recuerdo que tu cita en {{clinica}} *es en 2 horas* ⏰\n\n📅 *Hoy* a las {{hora}}\n🦷 *Motivo:* {{motivo}}',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'SÍ, voy en camino' },
+          { type: 'QUICK_REPLY', text: 'NO podré llegar' },
+        ],
+      },
+    ],
+  };
+  const enviados = [
+    {
+      type: 'body',
+      parameters: [
+        { type: 'text', parameter_name: 'nombre', text: 'Alexandra' },
+        { type: 'text', parameter_name: 'clinica', text: 'Dento Estetic Salud Bucal' },
+        { type: 'text', parameter_name: 'hora', text: '16:00' },
+        { type: 'text', parameter_name: 'motivo', text: 'Evaluación prótesis removible' },
+      ],
+    },
+  ];
+
+  it('el recordatorio que se vio como «▶️recordatorio2horas_cita◀️» sale con su texto y sus botones', () => {
+    assert.equal(
+      textoDePlantilla(recordatorio, enviados),
+      'Hola Alexandra, te recuerdo que tu cita en Dento Estetic Salud Bucal *es en 2 horas* ⏰\n\n' +
+        '📅 *Hoy* a las 16:00\n🦷 *Motivo:* Evaluación prótesis removible\n\n' +
+        '▶️ SÍ, voy en camino\n▶️ NO podré llegar',
+    );
+  });
+
+  it('posicionales, encabezado de texto en negrita, imagen y pie', () => {
+    const def = {
+      components: [
+        { type: 'HEADER', format: 'TEXT', text: 'Hola {{1}}' },
+        { type: 'BODY', text: 'Tu cita es el {{1}} a las {{2}}' },
+        { type: 'FOOTER', text: 'Dento Estetic' },
+      ],
+    };
+    const comps = [
+      { type: 'header', parameters: [{ type: 'text', text: 'Ana' }] },
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: 'lunes' },
+          { type: 'text', text: '9:00' },
+        ],
+      },
+    ];
+    assert.equal(textoDePlantilla(def, comps), '*Hola Ana*\n\nTu cita es el lunes a las 9:00\n\n_Dento Estetic_');
+    const img = {
+      components: [
+        { type: 'HEADER', format: 'IMAGE' },
+        { type: 'BODY', text: 'Sin variables' },
+      ],
+    };
+    assert.equal(textoDePlantilla(img, []), '🖼️ (imagen)\n\nSin variables');
+  });
+
+  it('una variable que no llegó se deja a la vista, y sin definición no hay texto', () => {
+    assert.equal(textoDePlantilla({ components: [{ type: 'BODY', text: 'Hola {{nombre}}' }] }, []), 'Hola {{nombre}}');
+    assert.equal(textoDePlantilla(undefined, enviados), undefined);
+  });
+
+  it('el respaldo no lleva guiones bajos (el markdown de Chatwoot los lee como cursiva)', () => {
+    assert.equal(respaldoDePlantilla('recordatorio_2_horas_cita'), '📄 Plantilla «recordatorio 2 horas cita»');
   });
 });

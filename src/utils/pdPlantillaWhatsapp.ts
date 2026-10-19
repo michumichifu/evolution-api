@@ -128,3 +128,75 @@ export function errorDeMeta(respuesta: any): string {
   const mensaje = respuesta?.message || respuesta?.error?.message;
   return [mensaje, detalle].filter(Boolean).join(' — ') || 'Meta no aceptó la plantilla';
 }
+
+/**
+ * PD (19 oct 2026): EL TEXTO REAL DE UNA PLANTILLA ENVIADA, para guardarlo y para Chatwoot.
+ *
+ * Por la Cloud API, `sendTemplate` guardaba solo `▶️<nombre>◀️`, y eso era lo que llegaba a
+ * Chatwoot. Luis vio en la conversación de una paciente «▶️recordatorio2horas_cita◀️» en vez del
+ * recordatorio de 2 horas: el nombre, y encima con los guiones bajos comidos, porque el markdown de
+ * Chatwoot lee `_2_` como cursiva. Nadie del equipo podía saber qué se le había dicho a la paciente.
+ *
+ * Aquí se arma con la definición que da Meta (`/<waba>/message_templates`) y los `components` que se
+ * mandaron: encabezado de texto en negrita, cuerpo y pie con sus variables rellenas (posicionales
+ * `{{1}}` y con nombre `{{nombre}}`) y los botones, uno por línea. Se escribe en formato de WhatsApp:
+ * la traducción al markdown de Chatwoot la hace después `aMarkdownDeChatwoot`.
+ * Devuelve `undefined` si no hay definición: quien llama pone entonces `respaldoDePlantilla`.
+ */
+export function textoDePlantilla(definicion: any, componentes: any[] | undefined): string | undefined {
+  if (!definicion || !Array.isArray(definicion.components)) return undefined;
+
+  const enviado = (tipo: string) =>
+    (Array.isArray(componentes) ? componentes : []).find((c: any) => String(c?.type || '').toLowerCase() === tipo);
+
+  const valorDe = (p: any): string | undefined => {
+    if (!p) return undefined;
+    const valor = p.text ?? p.currency?.fallback_value ?? p.date_time?.fallback_value;
+    return valor === undefined || valor === null ? undefined : String(valor);
+  };
+
+  const rellenar = (texto: string, componente: any): string => {
+    const parametros: any[] = Array.isArray(componente?.parameters) ? componente.parameters : [];
+    return String(texto).replace(/\{\{\s*(\w+)\s*\}\}/g, (marca, clave) => {
+      const p = /^\d+$/.test(clave)
+        ? parametros[Number(clave) - 1]
+        : parametros.find((x: any) => x?.parameter_name === clave);
+      return valorDe(p) ?? marca;
+    });
+  };
+
+  const bloques: string[] = [];
+  let botones: string[] = [];
+
+  for (const parte of definicion.components) {
+    const tipo = String(parte?.type || '').toUpperCase();
+    if (tipo === 'HEADER') {
+      const formato = String(parte.format || 'TEXT').toUpperCase();
+      if (formato === 'TEXT' && parte.text) bloques.push(`*${rellenar(parte.text, enviado('header')).trim()}*`);
+      else if (formato === 'IMAGE') bloques.push('🖼️ (imagen)');
+      else if (formato === 'VIDEO') bloques.push('🎬 (vídeo)');
+      else if (formato === 'DOCUMENT') bloques.push('📄 (documento)');
+      else if (formato === 'LOCATION') bloques.push('📍 (ubicación)');
+    } else if (tipo === 'BODY' && parte.text) {
+      bloques.push(rellenar(parte.text, enviado('body')));
+    } else if (tipo === 'FOOTER' && parte.text) {
+      bloques.push(`_${String(parte.text).trim()}_`);
+    } else if (tipo === 'BUTTONS' && Array.isArray(parte.buttons)) {
+      const icono: Record<string, string> = { URL: '🔗', PHONE_NUMBER: '📞', COPY_CODE: '📋' };
+      botones = parte.buttons
+        .filter((b: any) => b?.text)
+        .map((b: any) => `${icono[String(b.type || '').toUpperCase()] || '▶️'} ${b.text}`);
+    }
+  }
+
+  if (!bloques.length) return undefined;
+  if (botones.length) bloques.push(botones.join('\n'));
+  return bloques.join('\n\n');
+}
+
+/** Si Meta no da la definición: al menos el nombre, sin guiones bajos que el markdown se coma. */
+export function respaldoDePlantilla(nombre: string): string {
+  return `📄 Plantilla «${String(nombre || '')
+    .replace(/_/g, ' ')
+    .trim()}»`;
+}
