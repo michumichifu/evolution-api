@@ -1293,6 +1293,15 @@ export class BusinessStartupService extends ChannelStartupService {
 
       this.sendDataWebhook(Events.SEND_MESSAGE, messageRaw);
 
+      // 🔴 PARCHE PD (19 oct 2026): la instancia de Cloud API solo cargaba su Chatwoot al RECIBIR
+      // (`connectToWhatsapp`), así que lo que se enviaba tras reiniciar Evolution y antes del primer
+      // mensaje entrante no llegaba a Chatwoot, sin un solo aviso en el log. Lo destapó la prueba del
+      // texto de las plantillas: el recordatorio salió y se entregó, y en Chatwoot no había nada.
+      // `enabled` sin definir es que nunca se cargó; desactivado vale `false`.
+      if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled === undefined) {
+        await this.loadChatwoot().catch(() => undefined);
+      }
+
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && !isIntegration) {
         // PD (27 sep 2026): se espera a Chatwoot y se guarda el enlace, como con lo que entra. Sin él,
         // lo enviado por la API de Evolution (la nota de voz de Marie) no podía recibir en Chatwoot su
