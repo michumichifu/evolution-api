@@ -194,6 +194,86 @@ export function textoDePlantilla(definicion: any, componentes: any[] | undefined
   return bloques.join('\n\n');
 }
 
+/**
+ * PD (24 oct 2026): LA PLANTILLA ENVIADA COMO SE VE EN EL TELÉFONO, para el chat del Manager.
+ *
+ * `textoDePlantilla` la deja en texto: la foto del encabezado como «🖼️ (imagen)» y los botones como
+ * «▶️ Sí, quiero mi cita». Luis lo vio en la conversación de un paciente con la plantilla del
+ * seguimiento de 72 h: *«no se veía la imagen, decía en texto imagen… debe haberse visto el mensaje
+ * completo»*. Esto guarda las partes por separado —el encabezado con el enlace o el id de la foto
+ * que se mandó, el cuerpo con sus variables rellenas, el pie y los botones— en `message.pdPlantilla`,
+ * AL LADO del `conversation` de siempre, que siguen leyendo Chatwoot, n8n y los bots.
+ *
+ * La foto sale de lo enviado (`components` → header → image.link o image.id); si no viene, del
+ * ejemplo aprobado de la definición (`example.header_handle`, un enlace de Meta que caduca).
+ */
+export function estructuraDePlantilla(
+  definicion: any,
+  componentes: any[] | undefined,
+  nombre?: string,
+): Record<string, any> | undefined {
+  if (!definicion || !Array.isArray(definicion.components)) return undefined;
+
+  const enviado = (tipo: string) =>
+    (Array.isArray(componentes) ? componentes : []).find((c: any) => String(c?.type || '').toLowerCase() === tipo);
+
+  const valorDe = (p: any): string | undefined => {
+    if (!p) return undefined;
+    const valor = p.text ?? p.currency?.fallback_value ?? p.date_time?.fallback_value;
+    return valor === undefined || valor === null ? undefined : String(valor);
+  };
+
+  const rellenar = (texto: string, componente: any): string => {
+    const parametros: any[] = Array.isArray(componente?.parameters) ? componente.parameters : [];
+    return String(texto).replace(/\{\{\s*(\w+)\s*\}\}/g, (marca, clave) => {
+      const p = /^\d+$/.test(clave)
+        ? parametros[Number(clave) - 1]
+        : parametros.find((x: any) => x?.parameter_name === clave);
+      return valorDe(p) ?? marca;
+    });
+  };
+
+  const estructura: Record<string, any> = { nombre: nombre || definicion.name, botones: [] };
+  const TIPOS_DE_MEDIO: Record<string, string> = { IMAGE: 'imagen', VIDEO: 'video', DOCUMENT: 'documento' };
+  const TIPOS_DE_BOTON: Record<string, string> = { URL: 'url', PHONE_NUMBER: 'telefono', COPY_CODE: 'codigo' };
+
+  for (const parte of definicion.components) {
+    const tipo = String(parte?.type || '').toUpperCase();
+    if (tipo === 'HEADER') {
+      const formato = String(parte.format || 'TEXT').toUpperCase();
+      if (formato === 'TEXT' && parte.text) {
+        estructura.encabezado = { tipo: 'texto', texto: rellenar(parte.text, enviado('header')).trim() };
+      } else if (TIPOS_DE_MEDIO[formato]) {
+        const clave = formato.toLowerCase();
+        const medio = (enviado('header')?.parameters ?? []).find((p: any) => p?.[clave])?.[clave] ?? {};
+        const ejemplo = parte.example?.header_handle?.[0];
+        estructura.encabezado = {
+          tipo: TIPOS_DE_MEDIO[formato],
+          ...(medio.link ? { enlace: String(medio.link) } : {}),
+          ...(medio.id ? { id: String(medio.id) } : {}),
+          ...(!medio.link && ejemplo ? { enlace: String(ejemplo), deEjemplo: true } : {}),
+        };
+      } else if (formato === 'LOCATION') {
+        estructura.encabezado = { tipo: 'ubicacion' };
+      }
+    } else if (tipo === 'BODY' && parte.text) {
+      estructura.cuerpo = rellenar(parte.text, enviado('body'));
+    } else if (tipo === 'FOOTER' && parte.text) {
+      estructura.pie = String(parte.text).trim();
+    } else if (tipo === 'BUTTONS' && Array.isArray(parte.buttons)) {
+      estructura.botones = parte.buttons
+        .filter((b: any) => b?.text)
+        .map((b: any) => ({
+          tipo: TIPOS_DE_BOTON[String(b.type || '').toUpperCase()] || 'respuesta',
+          texto: String(b.text),
+        }));
+    }
+  }
+
+  if (!estructura.encabezado && !estructura.cuerpo && !estructura.botones.length) return undefined;
+  return estructura;
+}
+
 /** Si Meta no da la definición: al menos el nombre, sin guiones bajos que el markdown se coma. */
 export function respaldoDePlantilla(nombre: string): string {
   return `📄 Plantilla «${String(nombre || '')

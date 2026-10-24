@@ -23,7 +23,7 @@ import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
 import { createJid, esBsuid } from '@utils/createJid';
-import { respaldoDePlantilla, textoDePlantilla } from '@utils/pdPlantillaWhatsapp';
+import { estructuraDePlantilla, respaldoDePlantilla, textoDePlantilla } from '@utils/pdPlantillaWhatsapp';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -1266,8 +1266,12 @@ export class BusinessStartupService extends ChannelStartupService {
           // en vez del recordatorio de 2 horas. Se arma después de enviar, para no retrasar el envío.
           const plantilla = content.template;
           const definicion = await this.definicionDePlantilla(plantilla.name, plantilla.language?.code);
+          // PD (24 oct 2026): y sus partes por separado, para que el chat del Manager enseñe la foto y
+          // los botones en vez de «🖼️ (imagen)» y «▶️ …». El `conversation` no cambia.
+          const partes = estructuraDePlantilla(definicion, plantilla.components, plantilla.name);
           message = {
             conversation: textoDePlantilla(definicion, plantilla.components) ?? respaldoDePlantilla(plantilla.name),
+            ...(partes ? { pdPlantilla: partes } : {}),
           };
           return enviado;
         }

@@ -7,6 +7,7 @@
 import {
   componentesDePlantilla,
   errorDeMeta,
+  estructuraDePlantilla,
   pideImagenDeEjemplo,
   respaldoDePlantilla,
   textoDePlantilla,
@@ -182,5 +183,75 @@ describe('textoDePlantilla (19 oct 2026)', () => {
 
   it('el respaldo no lleva guiones bajos (el markdown de Chatwoot los lee como cursiva)', () => {
     assert.equal(respaldoDePlantilla('recordatorio_2_horas_cita'), '📄 Plantilla «recordatorio 2 horas cita»');
+  });
+});
+
+describe('estructuraDePlantilla (24 oct 2026)', () => {
+  // La definición real de protesis_facilidad_pago (Dento Estetic), recortada.
+  const facilidad = {
+    name: 'protesis_facilidad_pago',
+    components: [
+      { type: 'HEADER', format: 'IMAGE', example: { header_handle: ['https://scontent.whatsapp.net/ejemplo.jpg?oe=1'] } },
+      { type: 'BODY', text: '¡Hola! 😊 Hace unos días nos escribiste por la prótesis removible.' },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Sí, quiero mi cita' },
+          { type: 'QUICK_REPLY', text: 'Tengo una duda' },
+          { type: 'URL', text: 'Ver la web', url: 'https://x' },
+        ],
+      },
+    ],
+  };
+  const IMG = 'https://dentoesteticsaludbucal.com/img/whatsapp/protesis-pago-en-dos-partes.jpg';
+
+  it('la foto que se MANDÓ, no «🖼️ (imagen)», y los botones uno a uno', () => {
+    const e = estructuraDePlantilla(facilidad, [{ type: 'header', parameters: [{ type: 'image', image: { link: IMG } }] }]);
+    assert.deepEqual(e.encabezado, { tipo: 'imagen', enlace: IMG });
+    assert.equal(e.cuerpo, facilidad.components[1].text);
+    assert.deepEqual(e.botones, [
+      { tipo: 'respuesta', texto: 'Sí, quiero mi cita' },
+      { tipo: 'respuesta', texto: 'Tengo una duda' },
+      { tipo: 'url', texto: 'Ver la web' },
+    ]);
+    assert.equal(e.nombre, 'protesis_facilidad_pago');
+  });
+
+  it('subida por id: el id, y para enseñarla el enlace del ejemplo (el selector de Chatwoot sube justo esa)', () => {
+    const e = estructuraDePlantilla(facilidad, [{ type: 'header', parameters: [{ type: 'image', image: { id: '123' } }] }]);
+    assert.deepEqual(e.encabezado, {
+      tipo: 'imagen',
+      id: '123',
+      enlace: 'https://scontent.whatsapp.net/ejemplo.jpg?oe=1',
+      deEjemplo: true,
+    });
+  });
+
+  it('sin foto en lo enviado: la del ejemplo aprobado, marcada', () => {
+    const e = estructuraDePlantilla(facilidad, []);
+    assert.deepEqual(e.encabezado, { tipo: 'imagen', enlace: 'https://scontent.whatsapp.net/ejemplo.jpg?oe=1', deEjemplo: true });
+  });
+
+  it('las variables del cuerpo y del encabezado de texto, rellenas', () => {
+    const def = {
+      name: 'recordatorio',
+      components: [
+        { type: 'HEADER', format: 'TEXT', text: 'Cita de {{1}}' },
+        { type: 'BODY', text: 'Hola {{nombre}}, te esperamos' },
+        { type: 'FOOTER', text: 'Dento Estetic' },
+      ],
+    };
+    const e = estructuraDePlantilla(def, [
+      { type: 'header', parameters: [{ type: 'text', text: 'Luis' }] },
+      { type: 'body', parameters: [{ type: 'text', parameter_name: 'nombre', text: 'Luis' }] },
+    ]);
+    assert.deepEqual(e.encabezado, { tipo: 'texto', texto: 'Cita de Luis' });
+    assert.equal(e.cuerpo, 'Hola Luis, te esperamos');
+    assert.equal(e.pie, 'Dento Estetic');
+    assert.deepEqual(e.botones, []);
+  });
+
+  it('sin definición, nada', () => {
+    assert.equal(estructuraDePlantilla(undefined, []), undefined);
   });
 });
