@@ -21,6 +21,7 @@ import { CacheService } from '@api/services/cache.service';
 import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { AudioConverter, Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
+import { INSTANCE_DIR } from '@config/path.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
 import { createJid, esBsuid } from '@utils/createJid';
 import { estructuraDePlantilla, respaldoDePlantilla, textoDePlantilla } from '@utils/pdPlantillaWhatsapp';
@@ -30,6 +31,7 @@ import axios from 'axios';
 import { arrayUnique, isURL } from 'class-validator';
 import EventEmitter2 from 'eventemitter2';
 import FormData from 'form-data';
+import { appendFileSync, mkdirSync } from 'fs';
 import mimeTypes from 'mime-types';
 import { join } from 'path';
 
@@ -312,7 +314,30 @@ export class BusinessStartupService extends ChannelStartupService {
       ctwaClid: r.ctwa_clid || '',
       greetingMessageBody: r.welcome_message?.text || '',
     };
-    return anuncio.sourceUrl || anuncio.sourceId || anuncio.title || anuncio.body ? anuncio : null;
+    return anuncio.sourceUrl || anuncio.sourceId || anuncio.title || anuncio.body || anuncio.ctwaClid || anuncio.sourceType
+      ? anuncio
+      : null;
+  }
+
+  // PD (26 oct 2026): entre el 5 y el 10 % de los mensajes que entran con el texto predefinido de un anuncio se guardan SIN
+  // los datos del anuncio, y sin lo que mandó Meta no se sabe si no vino o se perdió aquí (Luis: «Algún fallo está
+  // pasando»). Se apunta TAL CUAL lo que llegó de Meta cuando el texto habla de un anuncio y no hay tarjeta, o cuando hay
+  // un `referral` que no se supo leer. Va al volumen de instancias, el único que el contenedor puede escribir.
+  private apuntarAnuncioPerdido(received: any, message: any, anuncio: any) {
+    try {
+      const texto = String(message?.text?.body || message?.button?.text || '');
+      const sinTarjeta = !anuncio && /anuncio/i.test(texto);
+      const sinLeer = !anuncio && message?.referral;
+      if (!sinTarjeta && !sinLeer) return;
+      const dir = join(INSTANCE_DIR, 'pd-diagnostico');
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(
+        join(dir, 'anuncios-sin-tarjeta.jsonl'),
+        JSON.stringify({ at: new Date().toISOString(), instancia: this.instance?.name, received }) + '\n',
+      );
+    } catch (e) {
+      this.logger.warn(`PD anuncio perdido: no se pudo apuntar (${e?.message})`);
+    }
   }
 
   private messageTextJson(received: any) {
@@ -775,6 +800,7 @@ export class BusinessStartupService extends ChannelStartupService {
         // integración con Chatwoot, el chat del Manager y los webhooks a n8n lo recogen igual para los
         // dos canales. Luis: «Eso es importante saberlo para saber sobre qué responderle».
         const anuncio = this.anuncioDeReferral(message.referral);
+        this.apuntarAnuncioPerdido(received, message, anuncio);
         if (anuncio && messageRaw) {
           messageRaw.contextInfo = { ...(messageRaw.contextInfo || {}), externalAdReply: anuncio };
         }
