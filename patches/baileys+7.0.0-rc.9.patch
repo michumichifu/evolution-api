@@ -36,3 +36,60 @@ index eff7a53..b3f7b63 100644
      const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true;
      const requiresOriginalForSomeProcessing = requiresDurationComputation || requiresThumbnailComputation;
      const { mediaKey, encFilePath, originalFilePath, fileEncSha256, fileSha256, fileLength } = await encryptedStream(uploadData.media, options.mediaTypeOverride || mediaType, {
+diff --git a/node_modules/baileys/lib/Socket/messages-recv.js b/node_modules/baileys/lib/Socket/messages-recv.js
+index f2e2e10..a41e45d 100644
+--- a/node_modules/baileys/lib/Socket/messages-recv.js
++++ b/node_modules/baileys/lib/Socket/messages-recv.js
+@@ -1166,12 +1166,23 @@ export const makeMessagesRecvSocket = (config) => {
+             return exec(node, false).catch(err => onUnexpectedError(err, identifier));
+         }
+     };
++    // [PD 3 nov 2026] WhatsApp entrega a veces los Estados de los contactos como un
++    // stanza <status> de primer nivel. La rc.9 no lo escuchaba y nunca lo confirmaba:
++    // el servidor frenaba la cola de pendientes y a los ~50 min cerraba la conexion
++    // con stream:error <ack class="status" type="media|text">, y al reconectar lo
++    // volvia a mandar. Resultado: los mensajes entraban por tandas con horas de
++    // retraso. Se confirma sin codigo de error (un NACK lo deja pendiente).
++    // Aguas arriba: WhiskeySockets/Baileys#2858 (PR #2866); whatsmeow a238105488.
++    const handleStatus = async (node) => {
++        await sendMessageAck(node);
++    };
+     const makeOfflineNodeProcessor = () => {
+         const nodeProcessorMap = new Map([
+             ['message', handleMessage],
+             ['call', handleCall],
+             ['receipt', handleReceipt],
+-            ['notification', handleNotification]
++            ['notification', handleNotification],
++            ['status', handleStatus]
+         ]);
+         const nodes = [];
+         let isProcessing = false;
+@@ -1189,7 +1200,16 @@ export const makeMessagesRecvSocket = (config) => {
+                         onUnexpectedError(new Error(`unknown offline node type: ${type}`), 'processing offline node');
+                         continue;
+                     }
+-                    await nodeProcessor(node);
++                    // [PD 3 nov 2026] Sin este try, un nodo que fallaba (p. ej. un
++                    // rate-overlimit al manejar una notificacion) rompia el bucle y
++                    // dejaba isProcessing en true: ningun pendiente mas se procesaba
++                    // en esa conexion hasta reconectar.
++                    try {
++                        await nodeProcessor(node);
++                    }
++                    catch (error) {
++                        onUnexpectedError(error, `processing offline ${type}`);
++                    }
+                 }
+                 isProcessing = false;
+             };
+@@ -1220,6 +1240,9 @@ export const makeMessagesRecvSocket = (config) => {
+     ws.on('CB:notification', async (node) => {
+         await processNode('notification', node, 'handling notification', handleNotification);
+     });
++    ws.on('CB:status', async (node) => {
++        await processNode('status', node, 'acking status stanza', handleStatus);
++    });
+     ws.on('CB:ack,class:message', (node) => {
+         handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'));
+     });
